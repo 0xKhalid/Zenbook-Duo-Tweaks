@@ -1,0 +1,6 @@
+# Zenbook Duo keyboard -> display toggle (minimal reliable rules)
+# add    (keyboard attached): trigger attach  -> eDP-2 disable
+# remove (keyboard detached): trigger detach  -> eDP-2 enable
+
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd7", ATTRS{name}=="*Zenbook Duo Keyboard*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="zenbook-duo-display-toggle@attach.service"
+ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd7", ATTRS{name}=="*Zenbook Duo Keyboard*", RUN+="/usr/bin/systemctl start zenbook-duo-display-toggle@detach.service"

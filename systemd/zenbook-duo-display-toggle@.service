@@ -1,0 +1,11 @@
+[Unit]
+Description=Zenbook Duo display toggle (%i)
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zenbook-duo-display-toggle.sh %i
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target

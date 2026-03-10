@@ -1,0 +1,637 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+#================================================================
+#  Zenbook-Duo-Tweaks
+#  v1.2
+#  by Khalid M AlAwadhi <khalid@remal.io>
+#================================================================
+
+VERSION="1.2"
+AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
+PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TWEAKS_DIR="${REPO_DIR}/tweaks"
+
+#================================================================
+#  Colors & Output Helpers
+#================================================================
+
+if [[ -t 1 ]]; then
+	C_RESET='\033[0m'
+	C_BOLD='\033[1m'
+	C_DIM='\033[2m'
+	C_RED='\033[1;31m'
+	C_GREEN='\033[1;32m'
+	C_YELLOW='\033[1;33m'
+	C_BLUE='\033[1;34m'
+	C_CYAN='\033[1;36m'
+	C_WHITE='\033[1;37m'
+	C_BG_CYAN='\033[46m'
+	C_BG_RED='\033[41m'
+	C_BG_GREEN='\033[42m'
+	C_BLACK='\033[30m'
+else
+	C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN=''
+	C_YELLOW='' C_BLUE='' C_CYAN='' C_WHITE=''
+	C_BG_CYAN='' C_BG_RED='' C_BG_GREEN='' C_BLACK=''
+fi
+
+success() { echo -e "${C_GREEN}  [+]${C_RESET} $*"; }
+warn()    { echo -e "${C_YELLOW}  [!]${C_RESET} $*"; }
+error()   { echo -e "${C_RED}  [-]${C_RESET} $*" >&2; }
+
+#================================================================
+#  System Info (for about screen)
+#================================================================
+
+get_system_info()
+{
+	SYS_OS=$(cat /etc/fedora-release 2>/dev/null || echo "Unknown")
+	SYS_KERNEL=$(uname -r 2>/dev/null || echo "Unknown")
+	SYS_DESKTOP="${XDG_CURRENT_DESKTOP:-Unknown}"
+	SYS_SESSION="${XDG_SESSION_TYPE:-Unknown}"
+}
+
+#================================================================
+#  ASCII Art Banner
+#================================================================
+
+show_banner()
+{
+	echo -e "${C_CYAN}"
+	cat <<'BANNER'
+
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║   ███████╗███████╗███╗   ██╗██████╗  ██████╗  ██████╗ ██╗  ██╗       ║
+  ║   ╚══███╔╝██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔═══██╗██║ ██╔╝       ║
+  ║     ███╔╝ █████╗  ██╔██╗ ██║██████╔╝██║   ██║██║   ██║█████╔╝        ║
+  ║    ███╔╝  ██╔══╝  ██║╚██╗██║██╔══██╗██║   ██║██║   ██║██╔═██╗        ║
+  ║   ███████╗███████╗██║ ╚████║██████╔╝╚██████╔╝╚██████╔╝██║  ██╗       ║
+  ║   ╚══════╝╚══════╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝       ║
+  ║                      Duo Linux Tweaks - v1.2                         ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+
+BANNER
+	echo -e "${C_RESET}"
+}
+
+#================================================================
+#  Terminal Helpers
+#================================================================
+
+INTERACTIVE_MODE=false
+term_save=""
+
+setup_term()
+{
+	INTERACTIVE_MODE=true
+	term_save=$(stty -g </dev/tty 2>/dev/null || true)
+	tput civis >/dev/tty 2>/dev/null || true
+}
+
+restore_term()
+{
+	if [[ "$INTERACTIVE_MODE" == true ]]; then
+		tput cnorm >/dev/tty 2>/dev/null || true
+		if [[ -n "$term_save" ]]; then
+			stty "$term_save" </dev/tty 2>/dev/null || true
+		fi
+	fi
+}
+
+trap restore_term EXIT
+
+read_key()
+{
+	local key
+	IFS= read -rsn1 key
+
+	case "$key" in
+		$'\x1b')
+			local seq
+			IFS= read -rsn2 -t 0.1 seq || true
+			case "$seq" in
+				'[A') echo "up" ;;
+				'[B') echo "down" ;;
+				'[C') echo "right" ;;
+				'[D') echo "left" ;;
+				*)    echo "esc" ;;
+			esac
+			;;
+		'')   echo "enter" ;;
+		'q'|'Q') echo "q" ;;
+		*)    echo "$key" ;;
+	esac
+}
+
+clear_screen()
+{
+	tput clear >/dev/tty 2>/dev/null || printf '\033[2J\033[H' >/dev/tty
+}
+
+#================================================================
+#  Interactive Menu Renderer
+#================================================================
+
+# Generic menu selector — renders to /dev/tty, returns index on stdout
+run_menu()
+{
+	local prompt="$1"
+	shift
+	local options=("$@")
+	local count=${#options[@]}
+	local selected=0
+
+	setup_term
+
+	while true; do
+		clear_screen
+		show_banner                                               >/dev/tty
+
+		echo -e "  ${C_BOLD}${prompt}${C_RESET}"                 >/dev/tty
+		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}" >/dev/tty
+		echo ""                                                   >/dev/tty
+
+		local i
+		for i in $(seq 0 $((count - 1))); do
+			if [[ $i -eq $selected ]]; then
+				echo -e "  ${C_BG_CYAN}${C_BLACK} ▸ ${options[$i]} ${C_RESET}" >/dev/tty
+			else
+				echo -e "    ${C_DIM}${options[$i]}${C_RESET}"                 >/dev/tty
+			fi
+		done
+
+		echo ""                                                   >/dev/tty
+		echo -e "  ${C_DIM}↑/↓ Navigate   Enter Select   q Back/Quit${C_RESET}" >/dev/tty
+
+		local key
+		key=$(read_key </dev/tty)
+
+		case "$key" in
+			up)
+				if [[ $selected -gt 0 ]]; then
+					selected=$((selected - 1))
+				else
+					selected=$((count - 1))
+				fi
+				;;
+			down)
+				if [[ $selected -lt $((count - 1)) ]]; then
+					selected=$((selected + 1))
+				else
+					selected=0
+				fi
+				;;
+			enter)
+				echo "$selected"
+				return 0
+				;;
+			q)
+				return 1
+				;;
+		esac
+	done
+}
+
+#================================================================
+#  Tweak Loading & Discovery
+#================================================================
+
+load_tweak()
+{
+	local name="$1"
+	local conf="${TWEAKS_DIR}/${name}/tweak.conf"
+
+	if [[ ! -f "$conf" ]]; then
+		error "Unknown tweak: ${C_BOLD}${name}${C_RESET}"
+		return 1
+	fi
+
+	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall 2>/dev/null || true
+
+	# shellcheck source=/dev/null
+	source "$conf"
+
+	if [[ -z "${TWEAK_NAME:-}" || ${#TWEAK_FILES[@]} -eq 0 ]]; then
+		error "Invalid tweak.conf for '${name}' — missing TWEAK_NAME or TWEAK_FILES"
+		return 1
+	fi
+}
+
+discover_tweaks()
+{
+	DISCOVERED_NAMES=()
+	DISCOVERED_DESCS=()
+	DISCOVERED_INFOS=()
+
+	for conf in "${TWEAKS_DIR}"/*/tweak.conf; do
+		[[ -f "$conf" ]] || continue
+		local dir
+		dir=$(dirname "$conf")
+		local name
+		name=$(basename "$dir")
+
+		unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+		# shellcheck source=/dev/null
+		source "$conf"
+
+		DISCOVERED_NAMES+=("$name")
+		DISCOVERED_DESCS+=("${TWEAK_DESCRIPTION:-No description}")
+		DISCOVERED_INFOS+=("${TWEAK_INFO:-}")
+	done
+}
+
+#================================================================
+#  Status Helper
+#================================================================
+
+# Returns: "not installed", "partially installed", "installed (modified)", "installed"
+get_tweak_status_raw()
+{
+	local name="$1"
+	local dir="${TWEAKS_DIR}/${name}"
+	local conf="${dir}/tweak.conf"
+
+	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+	# shellcheck source=/dev/null
+	source "$conf"
+
+	local total=${#TWEAK_FILES[@]}
+	local installed=0
+	local modified=0
+
+	for entry in "${TWEAK_FILES[@]}"; do
+		local src dest perm
+		IFS=':' read -r src dest perm <<< "$entry"
+		local src_path="${dir}/${src}"
+
+		if [[ -f "$dest" ]]; then
+			installed=$((installed + 1))
+			if ! cmp -s "$src_path" "$dest" 2>/dev/null; then
+				modified=$((modified + 1))
+			fi
+		fi
+	done
+
+	if [[ $installed -eq 0 ]]; then
+		echo "not installed"
+	elif [[ $installed -lt $total ]]; then
+		echo "partially installed"
+	elif [[ $modified -gt 0 ]]; then
+		echo "installed (modified)"
+	else
+		echo "installed"
+	fi
+}
+
+#================================================================
+#  Interactive Mode Screens
+#================================================================
+
+# Tweaks list screen — shows status, select to view detail
+screen_tweaks()
+{
+	while true; do
+		discover_tweaks
+
+		if [[ ${#DISCOVERED_NAMES[@]} -eq 0 ]]; then
+			error "No tweaks found" >/dev/tty
+			return
+		fi
+
+		# Build menu: each tweak shows name + status
+		local menu_opts=()
+		local i
+		for i in $(seq 0 $((${#DISCOVERED_NAMES[@]} - 1))); do
+			local name="${DISCOVERED_NAMES[$i]}"
+			local raw_status
+			raw_status=$(get_tweak_status_raw "$name")
+
+			local status_icon
+			case "$raw_status" in
+				"installed")            status_icon="[X]" ;;
+				"installed (modified)") status_icon="[~]" ;;
+				"partially installed")  status_icon="[/]" ;;
+				*)                      status_icon="[ ]" ;;
+			esac
+
+			local padded_name
+			padded_name=$(printf "%-18s" "$name")
+			menu_opts+=("${status_icon}  ${padded_name} ${DISCOVERED_DESCS[$i]}")
+		done
+		menu_opts+=("← Back")
+
+		local choice
+		if choice=$(run_menu "Tweaks   [X] installed  [ ] not installed" "${menu_opts[@]}"); then
+			if [[ $choice -lt ${#DISCOVERED_NAMES[@]} ]]; then
+				screen_tweak_detail "${DISCOVERED_NAMES[$choice]}" "${DISCOVERED_DESCS[$choice]}" "${DISCOVERED_INFOS[$choice]}"
+			else
+				return
+			fi
+		else
+			return
+		fi
+	done
+}
+
+# Per-tweak detail screen — shows info, status, and actions
+screen_tweak_detail()
+{
+	local name="$1"
+	local desc="$2"
+	local info_text="$3"
+
+	while true; do
+		local raw_status
+		raw_status=$(get_tweak_status_raw "$name")
+
+		local status_label
+		case "$raw_status" in
+			"not installed")        status_label="${C_DIM}[ ] not installed${C_RESET}" ;;
+			"partially installed")  status_label="${C_YELLOW}[/] partially installed${C_RESET}" ;;
+			"installed (modified)") status_label="${C_BLUE}[~] installed (modified)${C_RESET}" ;;
+			"installed")            status_label="${C_GREEN}[X] installed${C_RESET}" ;;
+		esac
+
+		# Build action options
+		local action_opts=()
+		case "$raw_status" in
+			"not installed")
+				action_opts+=("Install")
+				;;
+			"installed"|"installed (modified)"|"partially installed")
+				action_opts+=("Reinstall")
+				action_opts+=("Uninstall")
+				;;
+		esac
+		action_opts+=("← Back")
+
+		local action_count=${#action_opts[@]}
+		local selected=0
+
+		setup_term
+
+		while true; do
+			clear_screen
+			{
+				show_banner
+
+				echo -e "  ${C_BOLD}${name}${C_RESET}  ${C_DIM}—${C_RESET}  ${desc}"
+				echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+				echo ""
+
+				# Show info text
+				if [[ -n "$info_text" ]]; then
+					while IFS= read -r line; do
+						echo -e "  ${C_DIM}${line}${C_RESET}"
+					done <<< "$info_text"
+					echo ""
+				fi
+
+				echo -e "  Status: ${status_label}"
+				echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+				echo ""
+
+				# Render action options
+				local j
+				for j in $(seq 0 $((action_count - 1))); do
+					if [[ $j -eq $selected ]]; then
+						echo -e "  ${C_BG_CYAN}${C_BLACK} ▸ ${action_opts[$j]} ${C_RESET}"
+					else
+						echo -e "    ${C_DIM}${action_opts[$j]}${C_RESET}"
+					fi
+				done
+
+				echo ""
+				echo -e "  ${C_DIM}↑/↓ Navigate   Enter Select   q Back${C_RESET}"
+			} >/dev/tty
+
+			local key
+			key=$(read_key </dev/tty)
+
+			case "$key" in
+				up)
+					if [[ $selected -gt 0 ]]; then
+						selected=$((selected - 1))
+					else
+						selected=$((action_count - 1))
+					fi
+					;;
+				down)
+					if [[ $selected -lt $((action_count - 1)) ]]; then
+						selected=$((selected + 1))
+					else
+						selected=0
+					fi
+					;;
+				enter)
+					local chosen="${action_opts[$selected]}"
+					case "$chosen" in
+						"Install"|"Reinstall")
+							do_install_interactive "$name"
+							break
+							;;
+						"Uninstall")
+							do_uninstall_interactive "$name"
+							break
+							;;
+						"← Back")
+							return
+							;;
+					esac
+					;;
+				q)
+					return
+					;;
+			esac
+		done
+	done
+}
+
+screen_about()
+{
+	get_system_info
+
+	clear_screen
+	show_banner >/dev/tty
+
+	{
+		echo -e "  ${C_BOLD}Zenbook-Duo-Tweaks${C_RESET} ${C_DIM}v${VERSION}${C_RESET}"
+		echo -e "  ${C_DIM}by${C_RESET} ${C_WHITE}${AUTHOR}${C_RESET}"
+		echo ""
+		echo -e "  System tweaks for ASUS Zenbook Duo 2026 (UX8407)"
+		echo ""
+		echo -e "  ${C_BOLD}System${C_RESET}"
+		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+		echo -e "  ${C_WHITE}OS${C_RESET}         ${SYS_OS}"
+		echo -e "  ${C_WHITE}Kernel${C_RESET}     ${SYS_KERNEL}"
+		echo -e "  ${C_WHITE}Desktop${C_RESET}    ${SYS_DESKTOP} (${SYS_SESSION})"
+		echo ""
+		echo -e "  ${C_DIM}${PROJECT_URL}${C_RESET}"
+		echo ""
+		echo ""
+		echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
+	} >/dev/tty
+	read -rsn1 </dev/tty
+}
+
+do_install_interactive()
+{
+	local name="$1"
+	load_tweak "$name"
+
+	clear_screen
+	show_banner >/dev/tty
+
+	if [[ $EUID -ne 0 ]]; then
+		{
+			echo ""
+			echo -e "  ${C_BG_RED}${C_WHITE}${C_BOLD}  ROOT REQUIRED  ${C_RESET}"
+			echo ""
+			echo -e "  Install requires root privileges."
+			echo -e "  Run with: ${C_BOLD}sudo ./zenbook-tweaks${C_RESET}"
+			echo ""
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
+		} >/dev/tty
+		read -rsn1 </dev/tty
+		return
+	fi
+
+	local tweak_dir="${TWEAKS_DIR}/${name}"
+
+	{
+		echo -e "  ${C_BOLD}Installing:${C_RESET} ${C_CYAN}${TWEAK_NAME}${C_RESET}"
+		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+		echo ""
+	} >/dev/tty
+
+	if type -t tweak_pre_install &>/dev/null; then
+		tweak_pre_install >/dev/tty
+	fi
+
+	for entry in "${TWEAK_FILES[@]}"; do
+		local src dest perm
+		IFS=':' read -r src dest perm <<< "$entry"
+		local src_path="${tweak_dir}/${src}"
+
+		if [[ ! -f "$src_path" ]]; then
+			error "Source file not found: ${src_path}" >/dev/tty
+			echo ""                                    >/dev/tty
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}" >/dev/tty
+			read -rsn1 </dev/tty
+			return
+		fi
+
+		install -Dm"${perm}" "$src_path" "$dest"
+		success "$(basename "$src") → ${dest}" >/dev/tty
+	done
+
+	if type -t tweak_post_install &>/dev/null; then
+		tweak_post_install >/dev/tty
+	fi
+
+	{
+		echo ""
+		echo -e "  ${C_BG_GREEN}${C_BLACK}${C_BOLD}  ✓ ${TWEAK_NAME} installed successfully!  ${C_RESET}"
+		echo ""
+		echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
+	} >/dev/tty
+	read -rsn1 </dev/tty
+}
+
+do_uninstall_interactive()
+{
+	local name="$1"
+	load_tweak "$name"
+
+	clear_screen
+	show_banner >/dev/tty
+
+	if [[ $EUID -ne 0 ]]; then
+		{
+			echo ""
+			echo -e "  ${C_BG_RED}${C_WHITE}${C_BOLD}  ROOT REQUIRED  ${C_RESET}"
+			echo ""
+			echo -e "  Uninstall requires root privileges."
+			echo -e "  Run with: ${C_BOLD}sudo ./zenbook-tweaks${C_RESET}"
+			echo ""
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
+		} >/dev/tty
+		read -rsn1 </dev/tty
+		return
+	fi
+
+	{
+		echo -e "  ${C_BOLD}Uninstalling:${C_RESET} ${C_CYAN}${TWEAK_NAME}${C_RESET}"
+		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+		echo ""
+	} >/dev/tty
+
+	if type -t tweak_pre_uninstall &>/dev/null; then
+		tweak_pre_uninstall >/dev/tty
+	fi
+
+	for entry in "${TWEAK_FILES[@]}"; do
+		local src dest perm
+		IFS=':' read -r src dest perm <<< "$entry"
+
+		if [[ -f "$dest" ]]; then
+			rm -f "$dest"
+			success "Removed ${dest}" >/dev/tty
+		else
+			warn "Not found: ${dest} (skipping)" >/dev/tty
+		fi
+	done
+
+	if type -t tweak_post_uninstall &>/dev/null; then
+		tweak_post_uninstall >/dev/tty
+	fi
+
+	{
+		echo ""
+		echo -e "  ${C_BG_GREEN}${C_BLACK}${C_BOLD}  ✓ ${TWEAK_NAME} uninstalled successfully!  ${C_RESET}"
+		echo ""
+		echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
+	} >/dev/tty
+	read -rsn1 </dev/tty
+}
+
+#================================================================
+#  Interactive Main Menu
+#================================================================
+
+run_interactive()
+{
+	local menu_opts=(
+		"  Tweaks         Browse, install, and manage tweaks"
+		"  About          Version, author, and system info"
+		"  Quit           Exit"
+	)
+
+	while true; do
+		local choice
+		if choice=$(run_menu "Main Menu" "${menu_opts[@]}"); then
+			case "$choice" in
+				0) screen_tweaks ;;
+				1) screen_about ;;
+				2) return 0 ;;
+			esac
+		else
+			return 0
+		fi
+	done
+}
+
+#================================================================
+#  Main
+#================================================================
+
+if [[ -t 0 && -t 1 ]]; then
+	run_interactive
+else
+	echo "zenbook-tweaks requires an interactive terminal."
+	echo "Run: ./zenbook-tweaks"
+	exit 1
+fi

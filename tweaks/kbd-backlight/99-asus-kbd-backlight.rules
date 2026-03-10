@@ -1,0 +1,9 @@
+# Allow user access to ASUS Zenbook Duo Keyboard backlight control
+# USB:       Vendor 0B05, Product 1CD7
+# Bluetooth: Vendor 0B05, Product 1CD8
+
+# USB — match via parent USB device attributes
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1cd7", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# Bluetooth — match via HID bus device kernel name pattern
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="0005:0B05:1CD8.*", MODE="0660", GROUP="input", TAG+="uaccess"

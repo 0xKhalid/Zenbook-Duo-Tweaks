@@ -1,76 +1,59 @@
-# Zenbook-Duo-Tweaks
+# Zenbook Duo Tweaks for Linux
 
-Auto-toggle the second internal display on Zenbook Duo 2026 (UX8407).
+System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasma Wayland.
 
-- Keyboard attached -> `eDP-2` OFF
-- Keyboard detached -> `eDP-2` ON
+## Tested On
 
-Works on Fedora KDE / Plasma Wayland using `udev` + `systemd` + `kscreen-doctor`.
+| | |
+|---|---|
+| **Device** | ASUS Zenbook Duo 2026 (UX8407) |
+| **OS** | Fedora 43 |
+| **Desktop** | KDE Plasma (Wayland) |
+| **Kernel** | 6.20.5 |
 
-## Quick Start
+## Available Tweaks
 
-1) Check your display names:
+| Tweak | Description |
+|-------|-------------|
+| `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach |
+| `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 
-```bash
-kscreen-doctor -o
-```
-
-2) Install files:
-
-```bash
-sudo install -Dm755 scripts/zenbook-duo-display-toggle.sh /usr/local/bin/zenbook-duo-display-toggle.sh
-sudo install -Dm644 systemd/zenbook-duo-display-toggle@.service /etc/systemd/system/zenbook-duo-display-toggle@.service
-sudo install -Dm644 udev/99-zenbook-duo-keyboard-display.rules /etc/udev/rules.d/99-zenbook-duo-keyboard-display.rules
-```
-
-3) Reload:
+## Usage
 
 ```bash
-sudo systemctl daemon-reload
-sudo udevadm control --reload
+sudo ./zenbook-tweaks
 ```
 
-That’s it.
+Launches an interactive TUI — browse tweaks, view details and usage instructions, install/uninstall. Arrow keys to navigate, Enter to select. Requires `sudo` for install/uninstall.
 
-## Keyboard Match (Important)
+## Adding New Tweaks
 
-Edit `/etc/udev/rules.d/99-zenbook-duo-keyboard-display.rules` if your keyboard IDs differ.
+1. Create a folder under `tweaks/` with your tweak name
+2. Add your script, service, or rule files inside it
+3. Create a `tweak.conf` file defining:
+   - `TWEAK_NAME` — short identifier
+   - `TWEAK_DESCRIPTION` — one-line description
+   - `TWEAK_INFO` — multiline usage/instructions text (shown in TUI)
+   - `TWEAK_FILES` — array of `"source:dest:permissions"` entries
+   - Optional hook functions: `tweak_pre_install`, `tweak_post_install`, `tweak_post_uninstall`
 
-Find values with:
-
-```bash
-sudo udevadm monitor --udev --subsystem-match=input
-sudo udevadm info --attribute-walk --name=/dev/input/eventX
-```
-
-Current known working values on UX8407:
-
-- `ATTRS{id/vendor}=="0b05"`
-- `ATTRS{id/product}=="1cd7"`
-- `ATTRS{name}=="*Zenbook Duo Keyboard*"`
-
-## Validate
-
-Manual test:
-
-```bash
-sudo systemctl start zenbook-duo-display-toggle@detach.service
-sudo systemctl start zenbook-duo-display-toggle@attach.service
-```
-
-Check logs:
-
-```bash
-journalctl -t zenbook-duo-display-toggle -n 50 --no-pager
-```
-
-Expected:
-
-- `detach` -> `eDP-2` becomes enabled
-- `attach` -> `eDP-2` becomes disabled
+The TUI auto-discovers all tweaks from `tweaks/*/tweak.conf`.
 
 ## Files
 
-- `scripts/zenbook-duo-display-toggle.sh`
-- `systemd/zenbook-duo-display-toggle@.service`
-- `udev/99-zenbook-duo-keyboard-display.rules`
+```
+Zenbook-Duo-Tweaks/
+├── zenbook-tweaks                               TUI manager v1.2
+├── tweaks/
+│   ├── display-toggle/
+│   │   ├── tweak.conf
+│   │   ├── zenbook-duo-display-toggle.sh
+│   │   ├── zenbook-duo-display-toggle@.service
+│   │   └── 99-zenbook-duo-keyboard-display.rules
+│   └── kbd-backlight/
+│       ├── tweak.conf
+│       ├── kbd-backlight.sh
+│       └── 99-asus-kbd-backlight.rules
+├── .gitignore
+└── README.md
+```

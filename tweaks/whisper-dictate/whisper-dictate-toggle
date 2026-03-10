@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+
+set -u
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/whisper-dictate"
+PID_FILE="$STATE_DIR/arecord.pid"
+WAV_FILE="$STATE_DIR/dictation.wav"
+OUT_BASE="$STATE_DIR/transcript"
+TRANSCRIPT_FILE="${OUT_BASE}.txt"
+CLIP_OLD="$STATE_DIR/clipboard-before.txt"
+WHISPER_LOG="$STATE_DIR/whisper.log"
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.local/share/whisper.cpp}"
+MODEL="$WHISPER_DIR/models/ggml-base.en.bin"
+VAD_MODEL="$WHISPER_DIR/models/ggml-silero-v6.2.0.bin"
+WHISPER="$WHISPER_DIR/build/bin/whisper-cli"
+YDOTOOL_SOCKET_PATH="/tmp/.ydotool_socket"
+MAX_RECORD_SECONDS="${WHISPER_MAX_RECORD_SECONDS:-300}"
+
+mkdir -p "$STATE_DIR"
+
+notify()
+{
+	notify-send -i audio-input-microphone "Whisper Dictate" "$1"
+}
+
+cleanup_all()
+{
+	rm -f "$PID_FILE" "$WAV_FILE" "$TRANSCRIPT_FILE" "$CLIP_OLD" "$WHISPER_LOG" "${WAV_FILE}.txt"
+	rmdir "$STATE_DIR" 2>/dev/null || true
+}
+
+find_transcript_file()
+{
+	if [[ -f "$TRANSCRIPT_FILE" ]]; then
+		echo "$TRANSCRIPT_FILE"
+		return 0
+	fi
+
+	# Some whisper.cpp versions default to "<input>.txt" output naming.
+	if [[ -f "${WAV_FILE}.txt" ]]; then
+		echo "${WAV_FILE}.txt"
+		return 0
+	fi
+
+	return 1
+}
+
+run_whisper()
+{
+	local mode="$1"
+	local use_vad="$2"
+	local -a args=(
+		-m "$MODEL"
+		-f "$WAV_FILE"
+		-nt
+		-t 8
+		-of "$OUT_BASE"
+		-otxt
+	)
+
+	if [[ "$mode" == "full" && "$use_vad" == "true" ]]; then
+		args+=(
+			--vad
+			--vad-model "$VAD_MODEL"
+			-bs 1
+			-bo 1
+		)
+	fi
+
+	# If supported by the installed whisper.cpp version, suppress non-speech tokens.
+	if "$WHISPER" --help 2>&1 | grep -q -- "--suppress-nst"; then
+		args+=(--suppress-nst)
+	fi
+
+	"$WHISPER" "${args[@]}" >"$WHISPER_LOG" 2>&1
+}
+
+transcribe_recording()
+{
+	if [[ ! -f "$WAV_FILE" ]]; then
+		notify "No recording file found"
+		cleanup_all
+		return 1
+	fi
+
+	notify "Transcribing..."
+
+	if [[ ! -x "$WHISPER" ]]; then
+		notify "whisper-cli not found"
+		cleanup_all
+		return 1
+	fi
+
+	if [[ ! -f "$MODEL" ]]; then
+		notify "Model not found: ggml-base.en.bin"
+		cleanup_all
+		return 1
+	fi
+
+	rm -f "$TRANSCRIPT_FILE" "${WAV_FILE}.txt" "$WHISPER_LOG"
+
+	transcript_path=""
+	use_vad="false"
+	if [[ -f "$VAD_MODEL" ]] && "$WHISPER" --help 2>&1 | grep -q -- "--vad-model"; then
+		use_vad="true"
+	fi
+
+	if [[ "$use_vad" == "true" ]]; then
+		if run_whisper "full" "true"; then
+			transcript_path="$(find_transcript_file || true)"
+		fi
+
+		# Compatibility fallback: retry without VAD if needed.
+		if [[ -z "$transcript_path" ]]; then
+			if run_whisper "minimal" "false"; then
+				transcript_path="$(find_transcript_file || true)"
+			fi
+		fi
+	else
+		if run_whisper "minimal" "false"; then
+			transcript_path="$(find_transcript_file || true)"
+		fi
+	fi
+
+	if [[ -n "$transcript_path" ]]; then
+		text="$(tr '\n' ' ' < "$transcript_path" | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
+
+		if [[ ${#text} -gt 4 ]]; then
+			notify "$text"
+
+			wl-paste --no-newline > "$CLIP_OLD" 2>/dev/null || : > "$CLIP_OLD"
+			printf '%s' "$text" | wl-copy
+
+			YDOTOOL_SOCKET="$YDOTOOL_SOCKET_PATH" ydotool key 29:1 47:1 47:0 29:0 >/dev/null 2>&1
+
+			(
+				sleep 0.2
+				wl-copy < "$CLIP_OLD" 2>/dev/null || true
+				cleanup_all
+			) >/dev/null 2>&1 &
+		else
+			notify "No speech detected"
+			cleanup_all
+		fi
+	else
+		err_tail="$(tail -n 1 "$WHISPER_LOG" 2>/dev/null | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//' | cut -c1-80)"
+		if [[ -n "$err_tail" ]]; then
+			notify "Transcription failed: $err_tail"
+		else
+			notify "No transcript file created"
+		fi
+		cleanup_all
+	fi
+}
+
+start_recording()
+{
+	cleanup_all
+	mkdir -p "$STATE_DIR"
+	arecord -q -f S16_LE -r 16000 -c 1 -d "$MAX_RECORD_SECONDS" "$WAV_FILE" &
+	echo $! > "$PID_FILE"
+	notify "Recording..."
+}
+
+if [[ -f "$PID_FILE" ]]; then
+	PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+else
+	PID=""
+fi
+
+if [[ -n "${PID:-}" ]]; then
+	if kill -0 "$PID" 2>/dev/null; then
+		notify "Stopping recording..."
+
+		kill -INT "$PID" 2>/dev/null
+		sleep 1
+
+		if kill -0 "$PID" 2>/dev/null; then
+			kill -TERM "$PID" 2>/dev/null
+			sleep 1
+		fi
+
+		if kill -0 "$PID" 2>/dev/null; then
+			notify "Recorder did not stop"
+			exit 1
+		fi
+	fi
+
+	rm -f "$PID_FILE"
+fi
+
+if [[ -f "$WAV_FILE" ]]; then
+	transcribe_recording
+else
+	start_recording
+fi

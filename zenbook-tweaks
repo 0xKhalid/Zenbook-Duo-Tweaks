@@ -3,15 +3,18 @@ set -euo pipefail
 
 #================================================================
 #  Zenbook-Duo-Tweaks
-#  v1.2
+#  v1.3
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="1.2"
+VERSION="1.3"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TWEAKS_DIR="${REPO_DIR}/tweaks"
+TESTED_OS="Fedora 43"
+TESTED_KERNEL="6.20.5"
+TESTED_DESKTOP="KDE Plasma (Wayland)"
 
 #================================================================
 #  Colors & Output Helpers
@@ -42,18 +45,6 @@ warn()    { echo -e "${C_YELLOW}  [!]${C_RESET} $*"; }
 error()   { echo -e "${C_RED}  [-]${C_RESET} $*" >&2; }
 
 #================================================================
-#  System Info (for about screen)
-#================================================================
-
-get_system_info()
-{
-	SYS_OS=$(cat /etc/fedora-release 2>/dev/null || echo "Unknown")
-	SYS_KERNEL=$(uname -r 2>/dev/null || echo "Unknown")
-	SYS_DESKTOP="${XDG_CURRENT_DESKTOP:-Unknown}"
-	SYS_SESSION="${XDG_SESSION_TYPE:-Unknown}"
-}
-
-#================================================================
 #  ASCII Art Banner
 #================================================================
 
@@ -69,7 +60,7 @@ show_banner()
   ║    ███╔╝  ██╔══╝  ██║╚██╗██║██╔══██╗██║   ██║██║   ██║██╔═██╗        ║
   ║   ███████╗███████╗██║ ╚████║██████╔╝╚██████╔╝╚██████╔╝██║  ██╗       ║
   ║   ╚══════╝╚══════╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝       ║
-  ║                      Duo Linux Tweaks - v1.2                         ║
+  ║                      Duo Linux Tweaks - v1.3                         ║
   ╚══════════════════════════════════════════════════════════════════════╝
 
 BANNER
@@ -298,7 +289,7 @@ screen_tweaks()
 
 		if [[ ${#DISCOVERED_NAMES[@]} -eq 0 ]]; then
 			error "No tweaks found" >/dev/tty
-			return
+			return 0
 		fi
 
 		# Build menu: each tweak shows name + status
@@ -324,14 +315,14 @@ screen_tweaks()
 		menu_opts+=("← Back")
 
 		local choice
-		if choice=$(run_menu "Tweaks   [X] installed  [ ] not installed" "${menu_opts[@]}"); then
+		if choice=$(run_menu "Tweaks   [X] installed  [~] update available  [ ] not installed" "${menu_opts[@]}"); then
 			if [[ $choice -lt ${#DISCOVERED_NAMES[@]} ]]; then
 				screen_tweak_detail "${DISCOVERED_NAMES[$choice]}" "${DISCOVERED_DESCS[$choice]}" "${DISCOVERED_INFOS[$choice]}"
 			else
-				return
+				return 0
 			fi
 		else
-			return
+			return 0
 		fi
 	done
 }
@@ -351,7 +342,7 @@ screen_tweak_detail()
 		case "$raw_status" in
 			"not installed")        status_label="${C_DIM}[ ] not installed${C_RESET}" ;;
 			"partially installed")  status_label="${C_YELLOW}[/] partially installed${C_RESET}" ;;
-			"installed (modified)") status_label="${C_BLUE}[~] installed (modified)${C_RESET}" ;;
+			"installed (modified)") status_label="${C_BLUE}[~] update available${C_RESET}" ;;
 			"installed")            status_label="${C_GREEN}[X] installed${C_RESET}" ;;
 		esac
 
@@ -438,12 +429,12 @@ screen_tweak_detail()
 							break
 							;;
 						"← Back")
-							return
+							return 0
 							;;
 					esac
 					;;
 				q)
-					return
+					return 0
 					;;
 			esac
 		done
@@ -452,8 +443,6 @@ screen_tweak_detail()
 
 screen_about()
 {
-	get_system_info
-
 	clear_screen
 	show_banner >/dev/tty
 
@@ -463,14 +452,20 @@ screen_about()
 		echo ""
 		echo -e "  System tweaks for ASUS Zenbook Duo 2026 (UX8407)"
 		echo ""
-		echo -e "  ${C_BOLD}System${C_RESET}"
-		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
-		echo -e "  ${C_WHITE}OS${C_RESET}         ${SYS_OS}"
-		echo -e "  ${C_WHITE}Kernel${C_RESET}     ${SYS_KERNEL}"
-		echo -e "  ${C_WHITE}Desktop${C_RESET}    ${SYS_DESKTOP} (${SYS_SESSION})"
+			echo -e "  ${C_BOLD}Tested On${C_RESET}"
+			echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+			echo -e "  ${C_WHITE}OS${C_RESET}         ${TESTED_OS}"
+			echo -e "  ${C_WHITE}Kernel${C_RESET}     ${TESTED_KERNEL}"
+			echo -e "  ${C_WHITE}Desktop${C_RESET}    ${TESTED_DESKTOP}"
 		echo ""
 		echo -e "  ${C_DIM}${PROJECT_URL}${C_RESET}"
 		echo ""
+		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+		echo -e "  ${C_DIM}This software is provided \"as is\", without${C_RESET}"
+		echo -e "  ${C_DIM}warranty of any kind. The authors are not${C_RESET}"
+		echo -e "  ${C_DIM}responsible for any damage or system issues${C_RESET}"
+		echo -e "  ${C_DIM}that may result from using these tweaks.${C_RESET}"
+		echo -e "  ${C_DIM}Use at your own risk.${C_RESET}"
 		echo ""
 		echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
 	} >/dev/tty
@@ -612,14 +607,14 @@ run_interactive()
 
 	while true; do
 		local choice
-		if choice=$(run_menu "Main Menu" "${menu_opts[@]}"); then
+		if choice=$(run_menu "Main Menu   (Select Quit to exit)" "${menu_opts[@]}"); then
 			case "$choice" in
 				0) screen_tweaks ;;
 				1) screen_about ;;
 				2) return 0 ;;
 			esac
 		else
-			return 0
+			continue
 		fi
 	done
 }

@@ -17,7 +17,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 |-------|-------------|
 | `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
-| `whisper-dictate` | Live on-device voice-to-text transcription (spoken-text output) |
+| `whisper-dictate` | Live on-device voice-to-text transcription |
 
 ## Usage
 
@@ -44,7 +44,7 @@ The TUI auto-discovers all tweaks from `tweaks/*/tweak.conf`.
 
 ```
 Zenbook-Duo-Tweaks/
-├── zenbook-tweaks                               TUI manager v1.3
+├── zenbook-tweaks                               TUI manager v1.4
 ├── tweaks/
 │   ├── display-toggle/
 │   │   ├── tweak.conf
@@ -68,6 +68,10 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 ## Changelog
 
+### v1.4 - Timeout auto-finalize
+- `whisper-dictate` now auto-transcribes and pastes when recording reaches the max duration limit.
+- Added tweak info note for `WHISPER_MAX_RECORD_SECONDS` configurability and timeout behavior.
+
 ### v1.3 - On-device live transcription
 - Updated `whisper-dictate` messaging to focus on live on-device voice-to-text transcription.
 - Made Copilot/F12 mapping guidance optional (example only; users can choose any key).
@@ -81,7 +85,7 @@ This software is provided "as is", without warranty of any kind, express or impl
   - Keep original text normalization behavior for pasted output.
 - Added a 5-minute default recording limit for `whisper-dictate` (`WHISPER_MAX_RECORD_SECONDS=300`), with transcription preserved on next toggle after timeout.
 - Tweaks status UI now labels `[~]` as **update available** for reinstall flow.
-- Back from Tweaks now returns correctly to Main Menu (no unintended exit under `set -e`); use explicit `Quit` to exit.
+- Back from Tweaks now returns correctly to Main Menu (no unintended exit under `set -e`).
 - About screen now shows static `Tested On` values instead of dynamic runtime environment values.
 
 ### v1.2 - TUI-only simplification

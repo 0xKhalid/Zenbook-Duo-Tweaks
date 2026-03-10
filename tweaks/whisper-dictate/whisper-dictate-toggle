@@ -5,10 +5,12 @@ set -u
 STATE_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/whisper-dictate"
 PID_FILE="$STATE_DIR/arecord.pid"
 WAV_FILE="$STATE_DIR/dictation.wav"
+WAV_PROCESSING_FILE="$STATE_DIR/dictation.processing.wav"
 OUT_BASE="$STATE_DIR/transcript"
 TRANSCRIPT_FILE="${OUT_BASE}.txt"
 CLIP_OLD="$STATE_DIR/clipboard-before.txt"
 WHISPER_LOG="$STATE_DIR/whisper.log"
+ACTION_GUARD_FILE="$STATE_DIR/last-action.ts"
 
 WHISPER_DIR="${WHISPER_DIR:-$HOME/.local/share/whisper.cpp}"
 MODEL="$WHISPER_DIR/models/ggml-base.en.bin"
@@ -16,6 +18,8 @@ VAD_MODEL="$WHISPER_DIR/models/ggml-silero-v6.2.0.bin"
 WHISPER="$WHISPER_DIR/build/bin/whisper-cli"
 YDOTOOL_SOCKET_PATH="/tmp/.ydotool_socket"
 MAX_RECORD_SECONDS="${WHISPER_MAX_RECORD_SECONDS:-300}"
+ACTION_GUARD_SECONDS="${WHISPER_ACTION_GUARD_SECONDS:-2}"
+SCRIPT_PATH="$0"
 
 mkdir -p "$STATE_DIR"
 
@@ -26,8 +30,26 @@ notify()
 
 cleanup_all()
 {
-	rm -f "$PID_FILE" "$WAV_FILE" "$TRANSCRIPT_FILE" "$CLIP_OLD" "$WHISPER_LOG" "${WAV_FILE}.txt"
+	rm -f "$PID_FILE" "$WAV_FILE" "$WAV_PROCESSING_FILE" "$TRANSCRIPT_FILE" "$CLIP_OLD" "$WHISPER_LOG" \
+		"${WAV_FILE}.txt" "${WAV_PROCESSING_FILE}.txt"
 	rmdir "$STATE_DIR" 2>/dev/null || true
+}
+
+mark_recent_action()
+{
+	date +%s > "$ACTION_GUARD_FILE" 2>/dev/null || true
+}
+
+is_recent_action()
+{
+	[[ -f "$ACTION_GUARD_FILE" ]] || return 1
+
+	local last_ts now_ts
+	last_ts="$(cat "$ACTION_GUARD_FILE" 2>/dev/null || true)"
+	now_ts="$(date +%s)"
+
+	[[ "$last_ts" =~ ^[0-9]+$ ]] || return 1
+	(( now_ts - last_ts <= ACTION_GUARD_SECONDS ))
 }
 
 find_transcript_file()
@@ -78,13 +100,19 @@ run_whisper()
 
 transcribe_recording()
 {
-	if [[ ! -f "$WAV_FILE" ]]; then
-		notify "No recording file found"
-		cleanup_all
-		return 1
+	local start_msg="${1:-Transcribing...}"
+	local work_wav="$WAV_PROCESSING_FILE"
+
+	# Atomically claim the recording so concurrent invocations
+	# cannot transcribe/paste the same audio twice.
+	if ! mv "$WAV_FILE" "$work_wav" 2>/dev/null; then
+		return 0
 	fi
 
-	notify "Transcribing..."
+	local WAV_FILE="$work_wav"
+	mark_recent_action
+
+	notify "$start_msg"
 
 	if [[ ! -x "$WHISPER" ]]; then
 		notify "whisper-cli not found"
@@ -151,6 +179,7 @@ transcribe_recording()
 			notify "No transcript file created"
 		fi
 		cleanup_all
+		return 1
 	fi
 }
 
@@ -159,14 +188,42 @@ start_recording()
 	cleanup_all
 	mkdir -p "$STATE_DIR"
 	arecord -q -f S16_LE -r 16000 -c 1 -d "$MAX_RECORD_SECONDS" "$WAV_FILE" &
-	echo $! > "$PID_FILE"
+	local rec_pid=$!
+	echo "$rec_pid" > "$PID_FILE"
+
+	# If this recording reaches the max duration, auto-finalize transcription.
+	(
+		while kill -0 "$rec_pid" 2>/dev/null; do
+			sleep 1
+		done
+
+		if [[ -f "$PID_FILE" ]] && [[ "$(cat "$PID_FILE" 2>/dev/null)" == "$rec_pid" ]] && [[ -f "$WAV_FILE" ]]; then
+			"$SCRIPT_PATH" --auto-finalize-timeout >/dev/null 2>&1 &
+		fi
+	) >/dev/null 2>&1 &
+
 	notify "Recording..."
 }
+
+MODE="${1:-toggle}"
 
 if [[ -f "$PID_FILE" ]]; then
 	PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 else
 	PID=""
+fi
+
+if [[ "$MODE" == "--auto-finalize-timeout" ]]; then
+	if [[ -n "${PID:-}" ]] && kill -0 "$PID" 2>/dev/null; then
+		exit 0
+	fi
+
+	rm -f "$PID_FILE"
+
+	if [[ -f "$WAV_FILE" ]]; then
+		transcribe_recording "Transcribing..."
+	fi
+	exit 0
 fi
 
 if [[ -n "${PID:-}" ]]; then
@@ -191,7 +248,11 @@ if [[ -n "${PID:-}" ]]; then
 fi
 
 if [[ -f "$WAV_FILE" ]]; then
-	transcribe_recording
+	transcribe_recording "Transcribing..."
 else
+	# Guard against duplicate shortcut events immediately after transcription.
+	if [[ -f "$WAV_PROCESSING_FILE" ]] || is_recent_action; then
+		exit 0
+	fi
 	start_recording
 fi

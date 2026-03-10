@@ -3,11 +3,11 @@ set -euo pipefail
 
 #================================================================
 #  Zenbook-Duo-Tweaks
-#  v1.3
+#  v1.4
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="1.3"
+VERSION="1.4"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ show_banner()
   ║    ███╔╝  ██╔══╝  ██║╚██╗██║██╔══██╗██║   ██║██║   ██║██╔═██╗        ║
   ║   ███████╗███████╗██║ ╚████║██████╔╝╚██████╔╝╚██████╔╝██║  ██╗       ║
   ║   ╚══════╝╚══════╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝       ║
-  ║                      Duo Linux Tweaks - v1.3                         ║
+  ║                      Duo Linux Tweaks - v1.4                         ║
   ╚══════════════════════════════════════════════════════════════════════╝
 
 BANNER
@@ -607,14 +607,14 @@ run_interactive()
 
 	while true; do
 		local choice
-		if choice=$(run_menu "Main Menu   (Select Quit to exit)" "${menu_opts[@]}"); then
+		if choice=$(run_menu "Main Menu" "${menu_opts[@]}"); then
 			case "$choice" in
 				0) screen_tweaks ;;
 				1) screen_about ;;
 				2) return 0 ;;
 			esac
 		else
-			continue
+			return 0
 		fi
 	done
 }

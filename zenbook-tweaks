@@ -7,7 +7,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="1.4"
+VERSION="1.5"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ show_banner()
   ║    ███╔╝  ██╔══╝  ██║╚██╗██║██╔══██╗██║   ██║██║   ██║██╔═██╗        ║
   ║   ███████╗███████╗██║ ╚████║██████╔╝╚██████╔╝╚██████╔╝██║  ██╗       ║
   ║   ╚══════╝╚══════╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝       ║
-  ║                      Duo Linux Tweaks - v1.4                         ║
+  ║                      Duo Linux Tweaks - v1.5                         ║
   ╚══════════════════════════════════════════════════════════════════════╝
 
 BANNER

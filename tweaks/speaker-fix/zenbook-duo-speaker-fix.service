@@ -1,0 +1,11 @@
+[Unit]
+Description=Fix Zenbook Duo UX8407AA speaker switch
+After=sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zenbook-duo-speaker-fix.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -17,6 +17,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 |-------|-------------|
 | `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
+| `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
 | `whisper-dictate` | Live on-device voice-to-text transcription |
 
 ## Usage
@@ -55,6 +56,10 @@ Zenbook-Duo-Tweaks/
 │   │   ├── tweak.conf
 │   │   ├── kbd-backlight.sh
 │   │   └── 99-asus-kbd-backlight.rules
+│   ├── speaker-fix/
+│   │   ├── tweak.conf
+│   │   ├── zenbook-duo-speaker-fix.sh
+│   │   └── zenbook-duo-speaker-fix.service
 │   └── whisper-dictate/
 │       ├── tweak.conf
 │       └── whisper-dictate-toggle
@@ -68,11 +73,16 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 ## Changelog
 
-### v1.4 - Timeout auto-finalize
+### v1.5 - Let there be sound! Speaker fixed!:
+- New `speaker-fix` tweak: enables the ALSA `Speaker Switch` on the sof-soundwire card at boot.
+- The CS42L43/CS35L56 UCM profile does not set this control, leaving laptop speakers silent by default.
+- Installs a lightweight systemd service — no existing system files are modified.
+
+### v1.4 - Timeout auto-finalize:
 - `whisper-dictate` now auto-transcribes and pastes when recording reaches the max duration limit.
 - Added tweak info note for `WHISPER_MAX_RECORD_SECONDS` configurability and timeout behavior.
 
-### v1.3 - On-device live transcription
+### v1.3 - On-device live transcription:
 - Updated `whisper-dictate` messaging to focus on live on-device voice-to-text transcription.
 - Made Copilot/F12 mapping guidance optional (example only; users can choose any key).
 - Improved installer reliability:
@@ -88,7 +98,7 @@ This software is provided "as is", without warranty of any kind, express or impl
 - Back from Tweaks now returns correctly to Main Menu (no unintended exit under `set -e`).
 - About screen now shows static `Tested On` values instead of dynamic runtime environment values.
 
-### v1.2 - TUI-only simplification
+### v1.2 - TUI-only simplification:
 - Removed CLI mode and made the manager TUI-only.
 - Added per-tweak `TWEAK_INFO` in detail screen.
 - Updated status icons and streamlined tweak actions.

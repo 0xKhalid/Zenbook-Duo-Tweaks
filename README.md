@@ -77,6 +77,11 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 ## Changelog
 
+### v1.7 - Audio feedback for whisper-dictate:
+- `whisper-dictate` now plays short audio cues on record start/stop for instant feedback.
+- Uses freedesktop system sounds — no extra packages or files needed.
+- Configurable: `WHISPER_SOUND=0` to disable, or set custom paths via `WHISPER_SOUND_START` / `WHISPER_SOUND_STOP`.
+
 ### v1.6 - HEIC support + backup framework + state tracking:
 - New `heic-support` tweak: installs the minimum HEIC/HEIF codec packages from RPM Fusion Free (`libheif-freeworld`, `qt-heif-image-plugin`) for native image viewing in Gwenview, Dolphin, and other KDE/Qt apps.
 - Added `tweak_status_check` hook: allows package-only tweaks (no installed files) to report custom install status.

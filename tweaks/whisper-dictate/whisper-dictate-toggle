@@ -19,9 +19,32 @@ WHISPER="$WHISPER_DIR/build/bin/whisper-cli"
 YDOTOOL_SOCKET_PATH="/tmp/.ydotool_socket"
 MAX_RECORD_SECONDS="${WHISPER_MAX_RECORD_SECONDS:-300}"
 ACTION_GUARD_SECONDS="${WHISPER_ACTION_GUARD_SECONDS:-2}"
+SOUND_ENABLED="${WHISPER_SOUND:-1}"
+SOUND_START="${WHISPER_SOUND_START:-/usr/share/sounds/freedesktop/stereo/device-added.oga}"
+SOUND_STOP="${WHISPER_SOUND_STOP:-/usr/share/sounds/freedesktop/stereo/device-removed.oga}"
 SCRIPT_PATH="$0"
 
 mkdir -p "$STATE_DIR"
+
+_sound_player=""
+_sound_player_resolved=false
+
+_play_sound()
+{
+	[[ "$SOUND_ENABLED" == "1" ]] || return 0
+	local sound_file="$1"
+	[[ -f "$sound_file" ]] || return 0
+	if [[ "$_sound_player_resolved" == "false" ]]; then
+		_sound_player_resolved=true
+		if command -v paplay >/dev/null 2>&1; then
+			_sound_player="paplay"
+		elif command -v pw-play >/dev/null 2>&1; then
+			_sound_player="pw-play"
+		fi
+	fi
+	[[ -n "$_sound_player" ]] || return 0
+	"$_sound_player" "$sound_file" >/dev/null 2>&1 &
+}
 
 notify()
 {
@@ -190,6 +213,7 @@ start_recording()
 	arecord -q -f S16_LE -r 16000 -c 1 -d "$MAX_RECORD_SECONDS" "$WAV_FILE" &
 	local rec_pid=$!
 	echo "$rec_pid" > "$PID_FILE"
+	_play_sound "$SOUND_START"
 
 	# If this recording reaches the max duration, auto-finalize transcription.
 	(
@@ -229,6 +253,7 @@ fi
 if [[ -n "${PID:-}" ]]; then
 	if kill -0 "$PID" 2>/dev/null; then
 		notify "Stopping recording..."
+		_play_sound "$SOUND_STOP"
 
 		kill -INT "$PID" 2>/dev/null
 		sleep 1

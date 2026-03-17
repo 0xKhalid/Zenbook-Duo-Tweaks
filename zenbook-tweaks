@@ -6,7 +6,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="1.6"
+VERSION="1.7"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

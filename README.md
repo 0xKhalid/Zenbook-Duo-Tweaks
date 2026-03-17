@@ -9,7 +9,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 43 |
 | **Desktop** | KDE Plasma (Wayland) |
-| **Kernel** | 6.20.5 |
+| **Kernel** | 6.19.8 |
 
 ## Available Tweaks
 
@@ -19,6 +19,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
 | `whisper-dictate` | Live on-device voice-to-text transcription |
+| `heic-support` | Native HEIC/HEIF image support (RPM Fusion Free) |
 
 ## Usage
 
@@ -36,8 +37,9 @@ Launches an interactive TUI — browse tweaks, view details and usage instructio
    - `TWEAK_NAME` — short identifier
    - `TWEAK_DESCRIPTION` — one-line description
    - `TWEAK_INFO` — multiline usage/instructions text (shown in TUI)
-   - `TWEAK_FILES` — array of `"source:dest:permissions"` entries
-   - Optional hook functions: `tweak_pre_install`, `tweak_post_install`, `tweak_post_uninstall`
+   - `TWEAK_FILES` — array of `"source:dest:permissions"` entries (can be empty for package-only tweaks)
+   - Optional hook functions: `tweak_pre_install`, `tweak_post_install`, `tweak_pre_uninstall`, `tweak_post_uninstall`
+   - Optional `tweak_status_check` — custom status function for tweaks without files (must echo one of: `not installed`, `partially installed`, `installed`)
 
 The TUI auto-discovers all tweaks from `tweaks/*/tweak.conf`.
 
@@ -45,7 +47,7 @@ The TUI auto-discovers all tweaks from `tweaks/*/tweak.conf`.
 
 ```
 Zenbook-Duo-Tweaks/
-├── zenbook-tweaks                               TUI manager v1.4
+├── zenbook-tweaks
 ├── tweaks/
 │   ├── display-toggle/
 │   │   ├── tweak.conf
@@ -60,9 +62,11 @@ Zenbook-Duo-Tweaks/
 │   │   ├── tweak.conf
 │   │   ├── zenbook-duo-speaker-fix.sh
 │   │   └── zenbook-duo-speaker-fix.service
-│   └── whisper-dictate/
-│       ├── tweak.conf
-│       └── whisper-dictate-toggle
+│   ├── whisper-dictate/
+│   │   ├── tweak.conf
+│   │   └── whisper-dictate-toggle
+│   └── heic-support/
+│       └── tweak.conf
 ├── .gitignore
 └── README.md
 ```
@@ -72,6 +76,12 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v1.6 - HEIC support + backup framework + state tracking:
+- New `heic-support` tweak: installs the minimum HEIC/HEIF codec packages from RPM Fusion Free (`libheif-freeworld`, `qt-heif-image-plugin`) for native image viewing in Gwenview, Dolphin, and other KDE/Qt apps.
+- Added `tweak_status_check` hook: allows package-only tweaks (no installed files) to report custom install status.
+- Added automatic backup/restore: existing system files are backed up before a tweak overwrites them and restored on uninstall.
+- Added state tracking for package-only tweaks: records which packages were newly installed vs pre-existing. Uninstall only removes packages that the tweak itself installed — pre-existing packages are never touched.
 
 ### v1.5 - Let there be sound! Speaker fixed!:
 - New `speaker-fix` tweak: enables the ALSA `Speaker Switch` on the sof-soundwire card at boot.

@@ -3,17 +3,18 @@ set -euo pipefail
 
 #================================================================
 #  Zenbook-Duo-Tweaks
-#  v1.4
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="1.5"
+VERSION="1.6"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TWEAKS_DIR="${REPO_DIR}/tweaks"
+BACKUP_DIR="/var/lib/zenbook-tweaks/backups"
+STATE_DIR="/var/lib/zenbook-tweaks/state"
 TESTED_OS="Fedora 43"
-TESTED_KERNEL="6.20.5"
+TESTED_KERNEL="6.19.8"
 TESTED_DESKTOP="KDE Plasma (Wayland)"
 
 #================================================================
@@ -51,8 +52,7 @@ error()   { echo -e "${C_RED}  [-]${C_RESET} $*" >&2; }
 show_banner()
 {
 	echo -e "${C_CYAN}"
-	cat <<'BANNER'
-
+	cat <<BANNER
   ╔══════════════════════════════════════════════════════════════════════╗
   ║   ███████╗███████╗███╗   ██╗██████╗  ██████╗  ██████╗ ██╗  ██╗       ║
   ║   ╚══███╔╝██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔═══██╗██║ ██╔╝       ║
@@ -60,9 +60,8 @@ show_banner()
   ║    ███╔╝  ██╔══╝  ██║╚██╗██║██╔══██╗██║   ██║██║   ██║██╔═██╗        ║
   ║   ███████╗███████╗██║ ╚████║██████╔╝╚██████╔╝╚██████╔╝██║  ██╗       ║
   ║   ╚══════╝╚══════╝╚═╝  ╚═══╝╚═════╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝       ║
-  ║                      Duo Linux Tweaks - v1.5                         ║
+  ║                      Duo Linux Tweaks - v${VERSION}                         ║
   ╚══════════════════════════════════════════════════════════════════════╝
-
 BANNER
 	echo -e "${C_RESET}"
 }
@@ -200,13 +199,18 @@ load_tweak()
 	fi
 
 	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
-	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall 2>/dev/null || true
+	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 
 	# shellcheck source=/dev/null
 	source "$conf"
 
-	if [[ -z "${TWEAK_NAME:-}" || ${#TWEAK_FILES[@]} -eq 0 ]]; then
-		error "Invalid tweak.conf for '${name}' — missing TWEAK_NAME or TWEAK_FILES"
+	if [[ -z "${TWEAK_NAME:-}" ]]; then
+		error "Invalid tweak.conf for '${name}' — missing TWEAK_NAME"
+		return 1
+	fi
+
+	if [[ ${#TWEAK_FILES[@]} -eq 0 ]] && ! type -t tweak_status_check &>/dev/null; then
+		error "Invalid tweak.conf for '${name}' — must define TWEAK_FILES or tweak_status_check"
 		return 1
 	fi
 }
@@ -225,6 +229,7 @@ discover_tweaks()
 		name=$(basename "$dir")
 
 		unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+		unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 		# shellcheck source=/dev/null
 		source "$conf"
 
@@ -246,8 +251,15 @@ get_tweak_status_raw()
 	local conf="${dir}/tweak.conf"
 
 	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 	# shellcheck source=/dev/null
 	source "$conf"
+
+	# Custom status check (for package-only tweaks)
+	if type -t tweak_status_check &>/dev/null; then
+		tweak_status_check
+		return
+	fi
 
 	local total=${#TWEAK_FILES[@]}
 	local installed=0
@@ -519,6 +531,16 @@ do_install_interactive()
 			return
 		fi
 
+		# Backup existing destination file before overwriting
+		if [[ -f "$dest" ]]; then
+			local backup_path="${BACKUP_DIR}/${name}${dest}"
+			if [[ ! -f "$backup_path" ]]; then
+				mkdir -p "$(dirname "$backup_path")"
+				cp -a "$dest" "$backup_path"
+				warn "Backed up existing: ${dest}" >/dev/tty
+			fi
+		fi
+
 		install -Dm"${perm}" "$src_path" "$dest"
 		success "$(basename "$src") → ${dest}" >/dev/tty
 	done
@@ -578,7 +600,22 @@ do_uninstall_interactive()
 		else
 			warn "Not found: ${dest} (skipping)" >/dev/tty
 		fi
+
+		# Restore backup if one exists
+		local backup_path="${BACKUP_DIR}/${name}${dest}"
+		if [[ -f "$backup_path" ]]; then
+			mkdir -p "$(dirname "$dest")"
+			cp -a "$backup_path" "$dest"
+			success "Restored original: ${dest}" >/dev/tty
+			rm -f "$backup_path"
+		fi
 	done
+
+	# Clean up empty backup directories for this tweak
+	local tweak_backup_dir="${BACKUP_DIR}/${name}"
+	if [[ -d "$tweak_backup_dir" ]]; then
+		find "$tweak_backup_dir" -type d -empty -delete 2>/dev/null || true
+	fi
 
 	if type -t tweak_post_uninstall &>/dev/null; then
 		tweak_post_uninstall >/dev/tty

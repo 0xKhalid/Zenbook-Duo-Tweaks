@@ -1,0 +1,15 @@
+[ASUS Zenbook Duo Keyboard]
+MatchName=ASUS Zenbook Duo Keyboard
+MatchBus=bluetooth
+MatchUdevType=keyboard
+MatchVendor=0x0B05
+MatchProduct=0x1CD8
+AttrKeyboardIntegration=external
+
+[ASUS Zenbook Duo Keyboard Touchpad]
+MatchName=ASUS Zenbook Duo Keyboard Touchpad
+MatchBus=bluetooth
+MatchUdevType=touchpad
+MatchVendor=0x0B05
+MatchProduct=0x1CD8
+AttrTPKComboLayout=below

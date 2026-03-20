@@ -20,6 +20,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
 | `whisper-dictate` | Live on-device voice-to-text transcription |
 | `heic-support` | Native HEIC/HEIF image support (RPM Fusion Free) |
+| `touchpad-fix` | Disable-while-typing for detachable keyboard touchpad |
 
 ## Usage
 
@@ -65,8 +66,11 @@ Zenbook-Duo-Tweaks/
 │   ├── whisper-dictate/
 │   │   ├── tweak.conf
 │   │   └── whisper-dictate-toggle
-│   └── heic-support/
-│       └── tweak.conf
+│   ├── heic-support/
+│   │   └── tweak.conf
+│   └── touchpad-fix/
+│       ├── tweak.conf
+│       └── local-overrides.quirks
 ├── .gitignore
 └── README.md
 ```
@@ -76,6 +80,11 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v1.8 - Touchpad fix for detachable keyboard:
+- New `touchpad-fix` tweak: installs a libinput quirks file that marks the detachable Bluetooth keyboard and its touchpad as a combo device.
+- Enables proper "disable while typing" behavior — accidental palm/brush touches are suppressed and the cursor stops jumping while typing.
+- Single file install to `/etc/libinput/local-overrides.quirks`, logout/reboot to apply.
 
 ### v1.7 - Audio feedback for whisper-dictate:
 - `whisper-dictate` now plays short audio cues on record start/stop for instant feedback.

@@ -5,6 +5,7 @@ ACTION="${1:-}"
 TARGET_OUTPUT="${TARGET_OUTPUT:-eDP-2}"
 RETRY_COUNT="${RETRY_COUNT:-5}"
 RETRY_DELAY_SEC="${RETRY_DELAY_SEC:-0.6}"
+BOOT_MODE=false
 
 log()
 {
@@ -13,12 +14,13 @@ log()
 
 usage()
 {
-	echo "Usage: $0 <attach|detach>"
+	echo "Usage: $0 <attach|detach|boot>"
 	echo "  attach -> disable ${TARGET_OUTPUT}"
 	echo "  detach -> enable ${TARGET_OUTPUT}"
+	echo "  boot   -> detect keyboard, then attach or detach"
 }
 
-if [[ "${ACTION}" != "attach" && "${ACTION}" != "detach" ]]; then
+if [[ "${ACTION}" != "attach" && "${ACTION}" != "detach" && "${ACTION}" != "boot" ]]; then
 	usage
 	exit 2
 fi
@@ -26,6 +28,25 @@ fi
 if ! command -v kscreen-doctor >/dev/null 2>&1; then
 	log "ERROR: kscreen-doctor is not installed or not in PATH"
 	exit 1
+fi
+
+is_keyboard_present()
+{
+	grep -q "Zenbook Duo Keyboard" /proc/bus/input/devices 2>/dev/null
+}
+
+# Boot mode: detect keyboard presence, resolve to attach/detach
+if [[ "${ACTION}" == "boot" ]]; then
+	BOOT_MODE=true
+	RETRY_COUNT=30
+	RETRY_DELAY_SEC=2
+	if is_keyboard_present; then
+		ACTION="attach"
+		log "Boot check: keyboard present, will disable ${TARGET_OUTPUT}"
+	else
+		ACTION="detach"
+		log "Boot check: keyboard absent, will enable ${TARGET_OUTPUT}"
+	fi
 fi
 
 if [[ "${ACTION}" == "attach" ]]; then
@@ -60,9 +81,26 @@ resolve_active_graphical_session()
 	return 0
 }
 
-if ! resolve_active_graphical_session; then
-	log "ERROR: No active local graphical session found"
-	exit 1
+# In boot mode, retry session resolution since the desktop may not be ready yet
+if [[ "${BOOT_MODE}" == true ]]; then
+	SESSION_FOUND=false
+	for session_attempt in $(seq 1 "${RETRY_COUNT}"); do
+		if resolve_active_graphical_session; then
+			SESSION_FOUND=true
+			break
+		fi
+		log "Waiting for graphical session (attempt ${session_attempt}/${RETRY_COUNT})..."
+		sleep "${RETRY_DELAY_SEC}"
+	done
+	if [[ "${SESSION_FOUND}" != true ]]; then
+		log "ERROR: No graphical session found after ${RETRY_COUNT} attempts"
+		exit 1
+	fi
+else
+	if ! resolve_active_graphical_session; then
+		log "ERROR: No active local graphical session found"
+		exit 1
+	fi
 fi
 
 for attempt in $(seq 1 "${RETRY_COUNT}"); do

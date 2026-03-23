@@ -15,7 +15,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 
 | Tweak | Description |
 |-------|-------------|
-| `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach |
+| `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach + boot check |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
 | `whisper-dictate` | Live on-device voice-to-text transcription |
@@ -54,6 +54,7 @@ Zenbook-Duo-Tweaks/
 │   │   ├── tweak.conf
 │   │   ├── zenbook-duo-display-toggle.sh
 │   │   ├── zenbook-duo-display-toggle@.service
+│   │   ├── zenbook-duo-display-boot-check.service
 │   │   └── 99-zenbook-duo-keyboard-display.rules
 │   ├── kbd-backlight/
 │   │   ├── tweak.conf
@@ -80,6 +81,11 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v1.9 - Boot-time display check:
+- `display-toggle` now checks keyboard presence at boot and sets eDP-2 accordingly — no more manual plug/unplug cycle needed when booting without the keyboard.
+- New `boot` action in the display toggle script with extended retry logic (waits up to 60s for the graphical session to be ready).
+- New `zenbook-duo-display-boot-check.service` enabled automatically on install.
 
 ### v1.8 - Touchpad fix for detachable keyboard:
 - New `touchpad-fix` tweak: installs a libinput quirks file that marks the detachable Bluetooth keyboard and its touchpad as a combo device.

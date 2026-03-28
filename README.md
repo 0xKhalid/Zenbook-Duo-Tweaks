@@ -16,6 +16,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | Tweak | Description |
 |-------|-------------|
 | `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach + boot check |
+| `brightness-lock` | Keep lower built-in screen (`eDP-2`) at 100% brightness |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
 | `whisper-dictate` | Live on-device voice-to-text transcription |
@@ -56,6 +57,11 @@ Zenbook-Duo-Tweaks/
 │   │   ├── zenbook-duo-display-toggle@.service
 │   │   ├── zenbook-duo-display-boot-check.service
 │   │   └── 99-zenbook-duo-keyboard-display.rules
+│   ├── brightness-lock/
+│   │   ├── tweak.conf
+│   │   ├── zenbook-duo-brightness-lock.sh
+│   │   ├── zenbook-duo-brightness-lock.service
+│   │   └── zenbook-duo-brightness-lock.timer
 │   ├── kbd-backlight/
 │   │   ├── tweak.conf
 │   │   ├── kbd-backlight.sh
@@ -81,6 +87,11 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.0 - Lower display brightness lock:
+- New `brightness-lock` tweak: keeps the lower built-in display (`eDP-2`) pinned to full brightness to reduce the dual-slider brightness issue in KDE.
+- Installs `zenbook-duo-brightness-lock.sh` plus a systemd service/timer that re-applies full lower-screen brightness periodically during the graphical session.
+- Configurable via service environment variables (`TARGET_OUTPUT`, `TARGET_BRIGHTNESS`) for users with different panel naming.
 
 ### v1.9 - Boot-time display check:
 - `display-toggle` now checks keyboard presence at boot and sets eDP-2 accordingly — no more manual plug/unplug cycle needed when booting without the keyboard.

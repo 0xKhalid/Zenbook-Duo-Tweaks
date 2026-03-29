@@ -32,7 +32,21 @@ fi
 
 is_keyboard_present()
 {
-	grep -q "Zenbook Duo Keyboard" /proc/bus/input/devices 2>/dev/null
+	awk '
+	BEGIN { RS=""; Found=0 }
+	{
+		# Treat only the physically docked keyboard as "attached":
+		# USB device 0b05:1cd7 (Primax). Bluetooth keyboard (0b05:1cd8)
+		# should still be considered detached for display behavior.
+		if ($0 ~ /Vendor=0b05/ &&
+		    $0 ~ /Product=1cd7/ &&
+		    $0 !~ /P: Phys=py-evdev-uinput/)
+		{
+			Found=1;
+		}
+	}
+	END { exit(Found ? 0 : 1) }
+	' /proc/bus/input/devices 2>/dev/null
 }
 
 # Boot mode: detect keyboard presence, resolve to attach/detach

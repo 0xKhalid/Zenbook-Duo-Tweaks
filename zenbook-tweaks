@@ -6,7 +6,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="2.0"
+VERSION="2.1"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,7 +14,7 @@ TWEAKS_DIR="${REPO_DIR}/tweaks"
 BACKUP_DIR="/var/lib/zenbook-tweaks/backups"
 STATE_DIR="/var/lib/zenbook-tweaks/state"
 TESTED_OS="Fedora 43"
-TESTED_KERNEL="6.19.8"
+TESTED_KERNEL="6.19.9-200.fc43.x86_64"
 TESTED_DESKTOP="KDE Plasma (Wayland)"
 
 #================================================================

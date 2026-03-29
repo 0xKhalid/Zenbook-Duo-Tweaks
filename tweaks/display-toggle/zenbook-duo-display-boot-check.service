@@ -2,12 +2,15 @@
 Description=Zenbook Duo display boot check (enable/disable eDP-2)
 After=graphical.target
 Wants=graphical.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStartPre=/usr/bin/sleep 5
 ExecStart=/usr/local/bin/zenbook-duo-display-toggle.sh boot
 TimeoutStartSec=120
+Restart=on-failure
+RestartSec=15
 
 [Install]
 WantedBy=graphical.target

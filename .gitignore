@@ -9,6 +9,7 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/
+.codex
 
 # Temp
 *.tmp

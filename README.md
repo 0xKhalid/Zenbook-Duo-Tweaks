@@ -9,7 +9,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 43 |
 | **Desktop** | KDE Plasma (Wayland) |
-| **Kernel** | 6.19.8 |
+| **Kernel** | 6.19.9-200.fc43.x86_64 |
 
 ## Available Tweaks
 
@@ -87,6 +87,9 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.1 - Boot detached display-toggle reliability fix:
+- Fixed detached-at-boot reliability by making boot-check retry until a graphical session is ready and changing detection to treat only physically docked USB keyboard (`0b05:1cd7`) as attached, while Bluetooth mode is treated as detached.
 
 ### v2.0 - Lower display brightness lock:
 - New `brightness-lock` tweak: keeps the lower built-in display (`eDP-2`) pinned to full brightness to reduce the dual-slider brightness issue in KDE.

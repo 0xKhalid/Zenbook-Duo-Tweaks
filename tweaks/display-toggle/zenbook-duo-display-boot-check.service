@@ -8,7 +8,7 @@ StartLimitIntervalSec=0
 Type=oneshot
 ExecStartPre=/usr/bin/sleep 5
 ExecStart=/usr/local/bin/zenbook-duo-display-toggle.sh boot
-TimeoutStartSec=120
+TimeoutStartSec=180
 Restart=on-failure
 RestartSec=15
 

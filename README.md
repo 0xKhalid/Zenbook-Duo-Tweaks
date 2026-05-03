@@ -9,13 +9,13 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 43 |
 | **Desktop** | KDE Plasma (Wayland) |
-| **Kernel** | 6.19.9-200.fc43.x86_64 |
+| **Kernel** | 6.19.14-200.fc43.x86_64 |
 
 ## Available Tweaks
 
 | Tweak | Description |
 |-------|-------------|
-| `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach + boot check |
+| `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach + boot-safe check |
 | `brightness-lock` | Keep lower built-in screen (`eDP-2`) at 100% brightness |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
@@ -87,6 +87,10 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.2 - Display-toggle boot hardening:
+- Hardened `display-toggle` startup behavior by waiting for KDE/Wayland, session DBus, the Wayland socket, and KWin before calling `kscreen-doctor`.
+- Added a runtime lock and 30-second duplicate-action debounce so early udev attach/detach bursts cannot run overlapping display changes or repeatedly hit KScreen during login.
 
 ### v2.1 - Boot detached display-toggle reliability fix:
 - Fixed detached-at-boot reliability by making boot-check retry until a graphical session is ready and changing detection to treat only physically docked USB keyboard (`0b05:1cd7`) as attached, while Bluetooth mode is treated as detached.

@@ -3,6 +3,8 @@ set -euo pipefail
 
 ACTION="${1:-}"
 TARGET_OUTPUT="${TARGET_OUTPUT:-eDP-2}"
+PRIMARY_OUTPUT_WHEN_DISABLED="${PRIMARY_OUTPUT_WHEN_DISABLED:-eDP-1}"
+SWITCH_PRIMARY_ON_TOGGLE="${SWITCH_PRIMARY_ON_TOGGLE:-0}"
 KSCREEN_RETRY_COUNT="${KSCREEN_RETRY_COUNT:-5}"
 KSCREEN_RETRY_DELAY_SEC="${KSCREEN_RETRY_DELAY_SEC:-0.6}"
 READY_RETRY_COUNT="${READY_RETRY_COUNT:-10}"
@@ -22,6 +24,7 @@ XDG_RUNTIME_DIR=""
 DBUS_SESSION_BUS_ADDRESS=""
 WAYLAND_DISPLAY_NAME=""
 READY_REASON=""
+KSCREEN_ARGS=()
 
 log()
 {
@@ -34,6 +37,18 @@ usage()
 	echo "  attach -> disable ${TARGET_OUTPUT}"
 	echo "  detach -> enable ${TARGET_OUTPUT}"
 	echo "  boot   -> detect keyboard, then attach or detach"
+}
+
+should_switch_primary_on_toggle()
+{
+	case "${SWITCH_PRIMARY_ON_TOGGLE,,}" in
+		1|true|yes|on)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
 }
 
 if [[ "${ACTION}" != "attach" && "${ACTION}" != "detach" && "${ACTION}" != "boot" ]]; then
@@ -85,9 +100,23 @@ if [[ "${ACTION}" == "boot" ]]; then
 fi
 
 if [[ "${ACTION}" == "attach" ]]; then
-	KSCREEN_CMD="output.${TARGET_OUTPUT}.disable"
+	if should_switch_primary_on_toggle; then
+		KSCREEN_ARGS=(
+			"output.${PRIMARY_OUTPUT_WHEN_DISABLED}.primary"
+			"output.${TARGET_OUTPUT}.disable"
+		)
+	else
+		KSCREEN_ARGS=("output.${TARGET_OUTPUT}.disable")
+	fi
 else
-	KSCREEN_CMD="output.${TARGET_OUTPUT}.enable"
+	if should_switch_primary_on_toggle; then
+		KSCREEN_ARGS=(
+			"output.${TARGET_OUTPUT}.enable"
+			"output.${TARGET_OUTPUT}.primary"
+		)
+	else
+		KSCREEN_ARGS=("output.${TARGET_OUTPUT}.enable")
+	fi
 fi
 
 resolve_active_graphical_session()
@@ -252,7 +281,7 @@ run_kscreen_doctor()
 		)
 	fi
 
-	runuser -u "${SESSION_USER}" -- env "${EnvArgs[@]}" kscreen-doctor "${KSCREEN_CMD}" >/dev/null 2>&1
+	runuser -u "${SESSION_USER}" -- env "${EnvArgs[@]}" kscreen-doctor "${KSCREEN_ARGS[@]}" >/dev/null 2>&1
 }
 
 exec 9>"${LOCK_FILE}"
@@ -272,7 +301,8 @@ fi
 for attempt in $(seq 1 "${KSCREEN_RETRY_COUNT}"); do
 	if run_kscreen_doctor; then
 		mark_action_complete
-		log "SUCCESS: action=${ACTION}, output=${TARGET_OUTPUT}, user=${SESSION_USER}, attempt=${attempt}"
+		log "SUCCESS: action=${ACTION}, output=${TARGET_OUTPUT}, primary=${SWITCH_PRIMARY_ON_TOGGLE}," \
+			"user=${SESSION_USER}, attempt=${attempt}"
 		exit 0
 	fi
 	sleep "${KSCREEN_RETRY_DELAY_SEC}"

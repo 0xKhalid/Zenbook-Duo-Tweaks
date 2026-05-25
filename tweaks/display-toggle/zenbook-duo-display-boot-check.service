@@ -6,6 +6,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/default/zenbook-duo-display-toggle
 ExecStartPre=/usr/bin/sleep 5
 ExecStart=/usr/local/bin/zenbook-duo-display-toggle.sh boot
 TimeoutStartSec=180

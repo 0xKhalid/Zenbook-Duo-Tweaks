@@ -1,82 +1,91 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET_OUTPUT="${TARGET_OUTPUT:-eDP-2}"
+TARGET_BACKLIGHT="${TARGET_BACKLIGHT:-card0-eDP-2-backlight}"
 TARGET_BRIGHTNESS="${TARGET_BRIGHTNESS:-100}"
 DEBUG_LOG="${DEBUG_LOG:-0}"
+BACKLIGHT_PATH=""
 
 log()
 {
 	logger -t zenbook-duo-brightness-lock "$*"
 }
 
-resolve_active_graphical_session()
+debug_log()
 {
-	local session_id
-	session_id="$(loginctl list-sessions --no-legend | awk '{print $1}' | while read -r sid; do
-		state="$(loginctl show-session "${sid}" -p Active --value 2>/dev/null || true)"
-		type="$(loginctl show-session "${sid}" -p Type --value 2>/dev/null || true)"
-		class="$(loginctl show-session "${sid}" -p Class --value 2>/dev/null || true)"
-		remote="$(loginctl show-session "${sid}" -p Remote --value 2>/dev/null || true)"
-		if [[ "${state}" == "yes" && ("${type}" == "wayland" || "${type}" == "x11") && "${class}" == "user" && "${remote}" == "no" ]]; then
-			echo "${sid}"
-			break
-		fi
-	done)"
+	if [[ "${DEBUG_LOG}" == "1" ]]; then
+		log "$*"
+	fi
+}
 
-	if [[ -z "${session_id}" ]]; then
+resolve_backlight_device()
+{
+	if [[ "${TARGET_BACKLIGHT}" == /* ]]; then
+		BACKLIGHT_PATH="${TARGET_BACKLIGHT}"
+	else
+		BACKLIGHT_PATH="/sys/class/backlight/${TARGET_BACKLIGHT}"
+	fi
+
+	if [[ ! -d "${BACKLIGHT_PATH}" ]]; then
+		debug_log "WARNING: Backlight device not found: ${BACKLIGHT_PATH}"
 		return 1
 	fi
 
-	SESSION_UID="$(loginctl show-session "${session_id}" -p User --value)"
-	SESSION_USER="$(getent passwd "${SESSION_UID}" | cut -d: -f1)"
-	SESSION_TYPE="$(loginctl show-session "${session_id}" -p Type --value)"
-	XDG_RUNTIME_DIR="/run/user/${SESSION_UID}"
-	DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-	return 0
-}
-
-run_kscreen_command()
-{
-	local command="$1"
-
-	runuser -u "${SESSION_USER}" -- env \
-		XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
-		DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
-		XDG_SESSION_TYPE="${SESSION_TYPE}" \
-		kscreen-doctor "${command}" >/dev/null 2>&1
+	if [[ ! -r "${BACKLIGHT_PATH}/max_brightness" || ! -r "${BACKLIGHT_PATH}/brightness" ]]; then
+		debug_log "WARNING: Backlight brightness files unavailable: ${BACKLIGHT_PATH}"
+		return 1
+	fi
 }
 
 apply_brightness_lock()
 {
-	local primary_cmd="output.${TARGET_OUTPUT}.brightness.${TARGET_BRIGHTNESS}"
-	if run_kscreen_command "${primary_cmd}"; then
+	local max_brightness
+	local current_brightness
+	local target_percent
+	local target_value
+
+	if ! [[ "${TARGET_BRIGHTNESS}" =~ ^[0-9]+$ ]]; then
+		log "ERROR: TARGET_BRIGHTNESS must be an integer percentage from 0 to 100"
+		return 1
+	fi
+
+	target_percent=$((10#${TARGET_BRIGHTNESS}))
+	if (( target_percent > 100 )); then
+		log "ERROR: TARGET_BRIGHTNESS must be an integer percentage from 0 to 100"
+		return 1
+	fi
+
+	max_brightness="$(<"${BACKLIGHT_PATH}/max_brightness")"
+	current_brightness="$(<"${BACKLIGHT_PATH}/brightness")"
+
+	if ! [[ "${max_brightness}" =~ ^[0-9]+$ && "${current_brightness}" =~ ^[0-9]+$ ]] || (( max_brightness <= 0 )); then
+		log "ERROR: Invalid backlight values from ${BACKLIGHT_PATH}"
+		return 1
+	fi
+
+	target_value=$((max_brightness * target_percent / 100))
+	if (( target_percent > 0 && target_value == 0 )); then
+		target_value=1
+	fi
+
+	if (( current_brightness == target_value )); then
 		return 0
 	fi
 
-	# Fallback for builds expecting normalized brightness values.
-	if [[ "${TARGET_BRIGHTNESS}" == "100" ]]; then
-		if run_kscreen_command "output.${TARGET_OUTPUT}.brightness.1"; then
-			return 0
-		fi
+	if ! printf '%s\n' "${target_value}" > "${BACKLIGHT_PATH}/brightness"; then
+		log "ERROR: Failed to set ${BACKLIGHT_PATH}/brightness to ${target_value}"
+		return 1
 	fi
 
-	return 1
+	debug_log "Set ${TARGET_BACKLIGHT} brightness to ${target_value}/${max_brightness}"
+	return 0
 }
 
-if ! command -v kscreen-doctor >/dev/null 2>&1; then
-	log "ERROR: kscreen-doctor is not installed or not in PATH"
-	exit 1
-fi
-
-if ! resolve_active_graphical_session; then
-	# Not an error: no active graphical user session yet.
+if ! resolve_backlight_device; then
+	# Not an error: eDP-2 may be unavailable while disabled or during shutdown.
 	exit 0
 fi
 
 if ! apply_brightness_lock; then
-	if [[ "${DEBUG_LOG}" == "1" ]]; then
-		log "WARNING: Failed to force ${TARGET_OUTPUT} brightness for user=${SESSION_USER}"
-	fi
-	exit 0
+	exit 1
 fi

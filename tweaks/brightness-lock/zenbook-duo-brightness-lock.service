@@ -5,7 +5,7 @@ Wants=graphical.target
 
 [Service]
 Type=oneshot
-Environment=TARGET_OUTPUT=eDP-2
+Environment=TARGET_BACKLIGHT=card0-eDP-2-backlight
 Environment=TARGET_BRIGHTNESS=100
 ExecStart=/usr/local/bin/zenbook-duo-brightness-lock.sh
 TimeoutStartSec=15

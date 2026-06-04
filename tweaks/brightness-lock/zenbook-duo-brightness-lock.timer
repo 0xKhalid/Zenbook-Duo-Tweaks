@@ -3,8 +3,8 @@ Description=Re-apply Zenbook Duo lower display brightness lock
 
 [Timer]
 OnBootSec=20
-OnUnitActiveSec=3
-AccuracySec=1
+OnUnitActiveSec=30
+AccuracySec=5
 Unit=zenbook-duo-brightness-lock.service
 
 [Install]

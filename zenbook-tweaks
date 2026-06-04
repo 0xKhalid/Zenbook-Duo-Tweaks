@@ -6,16 +6,18 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="2.3"
+VERSION="2.4"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TWEAKS_DIR="${REPO_DIR}/tweaks"
 BACKUP_DIR="/var/lib/zenbook-tweaks/backups"
 STATE_DIR="/var/lib/zenbook-tweaks/state"
-TESTED_OS="Fedora 43"
-TESTED_KERNEL="6.19.9-200.fc43.x86_64"
-TESTED_DESKTOP="KDE Plasma (Wayland)"
+TESTED_OS="Fedora 44"
+TESTED_KERNEL="7.0.10-201.fc44.x86_64"
+TESTED_DESKTOP="KDE Plasma Wayland 6.6.5"
+TESTED_GPU="Intel Panther Lake Graphics [8086:b090]"
+TESTED_DRIVER="xe"
 
 #================================================================
 #  Colors & Output Helpers
@@ -469,6 +471,8 @@ screen_about()
 			echo -e "  ${C_WHITE}OS${C_RESET}         ${TESTED_OS}"
 			echo -e "  ${C_WHITE}Kernel${C_RESET}     ${TESTED_KERNEL}"
 			echo -e "  ${C_WHITE}Desktop${C_RESET}    ${TESTED_DESKTOP}"
+			echo -e "  ${C_WHITE}GPU${C_RESET}        ${TESTED_GPU}"
+			echo -e "  ${C_WHITE}Driver${C_RESET}     ${TESTED_DRIVER}"
 		echo ""
 		echo -e "  ${C_DIM}${PROJECT_URL}${C_RESET}"
 		echo ""

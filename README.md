@@ -7,9 +7,11 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | | |
 |---|---|
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
-| **OS** | Fedora 43 |
-| **Desktop** | KDE Plasma (Wayland) |
-| **Kernel** | 6.19.14-200.fc43.x86_64 |
+| **OS** | Fedora 44 |
+| **Desktop** | KDE Plasma Wayland 6.6.5 |
+| **Kernel** | 7.0.10-201.fc44.x86_64 |
+| **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
+| **Driver** | `xe` |
 
 ## Available Tweaks
 
@@ -87,6 +89,10 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.4 - Brightness-lock hardening and latest tested specs:
+- Hardened `brightness-lock` to write `/sys/class/backlight/card0-eDP-2-backlight` directly, skip no-op writes, and re-apply every 30 seconds instead of calling KScreen every 3 seconds.
+- Updated Tested On metadata for Fedora 44, kernel `7.0.10-201.fc44.x86_64`, KDE Plasma Wayland 6.6.5, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.3 - Optional primary display switching:
 - `display-toggle` can now optionally make `eDP-2` the KDE primary display when the lower screen is enabled,

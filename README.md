@@ -21,7 +21,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | `brightness-lock` | Keep lower built-in screen (`eDP-2`) at 100% brightness |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
-| `whisper-dictate` | Live on-device voice-to-text transcription |
+| `whisper-dictate` | Live on-device voice-to-text transcription with local model picker |
 | `heic-support` | Native HEIC/HEIF image support (RPM Fusion Free) |
 | `touchpad-fix` | Disable-while-typing for detachable keyboard touchpad |
 
@@ -44,8 +44,10 @@ Launches an interactive TUI — browse tweaks, view details and usage instructio
    - `TWEAK_FILES` — array of `"source:dest:permissions"` entries (can be empty for package-only tweaks)
    - Optional hook functions: `tweak_pre_install`, `tweak_post_install`, `tweak_pre_uninstall`, `tweak_post_uninstall`
    - Optional `tweak_status_check` — custom status function for tweaks without files (must echo one of: `not installed`, `partially installed`, `installed`)
+   - Optional `TWEAK_ACTIONS` — array of custom installed-tweak actions in `"Label:function_name"` format
 
 The TUI auto-discovers all tweaks from `tweaks/*/tweak.conf`.
+Custom `TWEAK_ACTIONS` appear in the tweak detail screen after the tweak is installed.
 
 ## Files
 
@@ -89,6 +91,10 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.5 - Whisper local model picker:
+- `whisper-dictate` now includes a local-only model picker for Fast (`base.en`), Better (`small.en`), Strong (`medium.en`), and Best practical (`large-v3-turbo-q5_0`) models. Missing models download only when selected, existing downloads are reused, and the selected model is stored in `~/.config/zenbook-tweaks/whisper-dictate.conf`.
+- The Silero VAD helper model is now downloaded from the current `ggml-org/whisper-vad` source, validated by size, and repaired automatically if a stale/broken placeholder file is found.
 
 ### v2.4 - Brightness-lock hardening and latest tested specs:
 - Hardened `brightness-lock` to write `/sys/class/backlight/card0-eDP-2-backlight` directly, skip no-op writes, and re-apply every 30 seconds instead of calling KScreen every 3 seconds.

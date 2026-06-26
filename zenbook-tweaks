@@ -6,7 +6,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="2.4"
+VERSION="2.5"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -200,7 +200,7 @@ load_tweak()
 		return 1
 	fi
 
-	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
 	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 
 	# shellcheck source=/dev/null
@@ -230,7 +230,7 @@ discover_tweaks()
 		local name
 		name=$(basename "$dir")
 
-		unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+		unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
 		unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 		# shellcheck source=/dev/null
 		source "$conf"
@@ -252,7 +252,7 @@ get_tweak_status_raw()
 	local dir="${TWEAKS_DIR}/${name}"
 	local conf="${dir}/tweak.conf"
 
-	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES
+	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
 	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 	# shellcheck source=/dev/null
 	source "$conf"
@@ -362,16 +362,35 @@ screen_tweak_detail()
 
 		# Build action options
 		local action_opts=()
+		local action_handlers=()
 		case "$raw_status" in
 			"not installed")
 				action_opts+=("Install")
+				action_handlers+=("install")
 				;;
 			"installed"|"installed (modified)"|"partially installed")
 				action_opts+=("Reinstall")
+				action_handlers+=("install")
+				load_tweak "$name"
+				if declare -p TWEAK_ACTIONS &>/dev/null; then
+					local custom_action
+					for custom_action in "${TWEAK_ACTIONS[@]}"; do
+						local custom_label custom_handler
+						IFS=':' read -r custom_label custom_handler <<< "$custom_action"
+						if [[ -n "$custom_label" && -n "$custom_handler" ]] &&
+							[[ "$(type -t "$custom_handler" 2>/dev/null || true)" == "function" ]]
+						then
+							action_opts+=("$custom_label")
+							action_handlers+=("custom:${custom_handler}")
+						fi
+					done
+				fi
 				action_opts+=("Uninstall")
+				action_handlers+=("uninstall")
 				;;
 		esac
 		action_opts+=("← Back")
+		action_handlers+=("back")
 
 		local action_count=${#action_opts[@]}
 		local selected=0
@@ -433,16 +452,21 @@ screen_tweak_detail()
 					;;
 				enter)
 					local chosen="${action_opts[$selected]}"
-					case "$chosen" in
-						"Install"|"Reinstall")
+					local handler="${action_handlers[$selected]}"
+					case "$handler" in
+						"install")
 							do_install_interactive "$name"
 							break
 							;;
-						"Uninstall")
+						"uninstall")
 							do_uninstall_interactive "$name"
 							break
 							;;
-						"← Back")
+						custom:*)
+							do_tweak_action_interactive "$name" "$chosen" "${handler#custom:}"
+							break
+							;;
+						"back")
 							return 0
 							;;
 					esac
@@ -488,6 +512,35 @@ screen_about()
 	read -rsn1 </dev/tty
 }
 
+do_tweak_action_interactive()
+{
+	local name="$1"
+	local label="$2"
+	local handler="$3"
+	load_tweak "$name"
+
+	clear_screen
+	show_banner >/dev/tty
+
+	{
+		echo -e "  ${C_BOLD}${TWEAK_NAME}:${C_RESET} ${C_CYAN}${label}${C_RESET}"
+		echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+		echo ""
+	} >/dev/tty
+
+	if [[ "$(type -t "$handler" 2>/dev/null || true)" != "function" ]]; then
+		error "Action is no longer available: ${label}" >/dev/tty
+	elif ! "$handler" >/dev/tty; then
+		warn "Action did not complete: ${label}" >/dev/tty
+	fi
+
+	{
+		echo ""
+		echo -e "  ${C_DIM}Press any key to return...${C_RESET}"
+	} >/dev/tty
+	read -rsn1 </dev/tty
+}
+
 do_install_interactive()
 {
 	local name="$1"
@@ -519,7 +572,13 @@ do_install_interactive()
 	} >/dev/tty
 
 	if type -t tweak_pre_install &>/dev/null; then
-		tweak_pre_install >/dev/tty
+		if ! tweak_pre_install >/dev/tty; then
+			error "Pre-install failed for ${TWEAK_NAME}" >/dev/tty
+			echo ""                                    >/dev/tty
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}" >/dev/tty
+			read -rsn1 </dev/tty
+			return
+		fi
 	fi
 
 	for entry in "${TWEAK_FILES[@]}"; do

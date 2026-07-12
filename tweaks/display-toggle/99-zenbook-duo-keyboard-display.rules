@@ -1,6 +1,7 @@
-# Zenbook Duo keyboard -> display toggle (minimal reliable rules)
-# add    (keyboard attached): trigger attach  -> eDP-2 disable
-# remove (keyboard detached): trigger detach  -> eDP-2 enable
+# Zenbook Duo physical USB keyboard -> display state reconciliation
+# Both add and remove wake the same sync service. The service checks current
+# physical USB state instead of trusting event direction, so virtual devices
+# created by input-remapper cannot reverse the requested display state.
 
-ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd7", ATTRS{name}=="*Zenbook Duo Keyboard*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="zenbook-duo-display-toggle@attach.service"
-ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd7", ATTRS{name}=="*Zenbook Duo Keyboard*", RUN+="/usr/bin/systemctl start zenbook-duo-display-toggle@detach.service"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0b05", ATTR{idProduct}=="1cd7", TAG+="systemd", ENV{SYSTEMD_WANTS}+="zenbook-duo-display-toggle@sync.service"
+ACTION=="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{PRODUCT}=="b05/1cd7/*", RUN+="/usr/bin/systemctl --no-block start zenbook-duo-display-toggle@sync.service"

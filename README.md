@@ -8,8 +8,8 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 |---|---|
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 44 |
-| **Desktop** | KDE Plasma Wayland 6.6.5 |
-| **Kernel** | 7.0.10-201.fc44.x86_64 |
+| **Desktop** | KDE Plasma Wayland 6.7.2 |
+| **Kernel** | 7.0.14-201.fc44.x86_64 |
 | **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
 | **Driver** | `xe` |
 
@@ -17,7 +17,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 
 | Tweak | Description |
 |-------|-------------|
-| `display-toggle` | Auto-toggle eDP-2 on keyboard attach/detach + optional primary switch |
+| `display-toggle` | Sync eDP-2 with the physical keyboard dock state + optional primary switch |
 | `brightness-lock` | Keep lower built-in screen (`eDP-2`) at 100% brightness |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
@@ -91,6 +91,11 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.6 - Physical display-state reconciliation:
+- Fixed `display-toggle` false detach events caused by input-remapper virtual keyboards copying the physical keyboard's name and USB IDs.
+- Physical USB add/remove events now wake one coalesced sync action, which checks `/sys/bus/usb/devices` for the real docked keyboard before enabling or disabling `eDP-2`.
+- Updated Tested On metadata for Fedora 44, kernel `7.0.14-201.fc44.x86_64`, KDE Plasma Wayland 6.7.2, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.5 - Whisper local model picker:
 - `whisper-dictate` now includes a local-only model picker for Fast (`base.en`), Better (`small.en`), Strong (`medium.en`), and Best practical (`large-v3-turbo-q5_0`) models. Missing models download only when selected, existing downloads are reused, and the selected model is stored in `~/.config/zenbook-tweaks/whisper-dictate.conf`.

@@ -1,5 +1,5 @@
 [Unit]
-Description=Zenbook Duo display toggle (%i)
+Description=Zenbook Duo display state reconciliation (%i)
 After=systemd-udevd.service
 
 [Service]

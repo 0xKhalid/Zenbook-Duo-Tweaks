@@ -1,0 +1,17 @@
+[Unit]
+Description=Zenbook Duo unified display and orientation control
+After=systemd-user-sessions.service graphical.target
+Wants=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/zenbook-duo-display-control
+ExecStart=/usr/local/bin/zenbook-duo-display-control.sh monitor
+Restart=always
+RestartSec=3
+TimeoutStartSec=180
+TimeoutStopSec=15
+
+[Install]
+WantedBy=graphical.target

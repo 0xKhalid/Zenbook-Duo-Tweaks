@@ -8,7 +8,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 |---|---|
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 44 |
-| **Desktop** | KDE Plasma Wayland 6.7.2 |
+| **Desktop** | KDE Plasma Wayland 6.7.3 |
 | **Kernel** | 7.0.14-201.fc44.x86_64 |
 | **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
 | **Driver** | `xe` |
@@ -17,7 +17,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 
 | Tweak | Description |
 |-------|-------------|
-| `display-toggle` | Sync eDP-2 with the physical keyboard dock state + optional primary switch |
+| `duo-display-control` | Manage both displays from keyboard docking and chassis orientation |
 | `brightness-lock` | Keep lower built-in screen (`eDP-2`) at 100% brightness |
 | `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
 | `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
@@ -55,12 +55,13 @@ Custom `TWEAK_ACTIONS` appear in the tweak detail screen after the tweak is inst
 Zenbook-Duo-Tweaks/
 ├── zenbook-tweaks
 ├── tweaks/
-│   ├── display-toggle/
+│   ├── duo-display-control/
 │   │   ├── tweak.conf
-│   │   ├── zenbook-duo-display-toggle.sh
-│   │   ├── zenbook-duo-display-toggle@.service
-│   │   ├── zenbook-duo-display-boot-check.service
-│   │   └── 99-zenbook-duo-keyboard-display.rules
+│   │   ├── zenbook-duo-display-control.sh
+│   │   ├── zenbook-duo-display-control.service
+│   │   ├── zenbook-duo-display-control@.service
+│   │   ├── 99-zenbook-duo-display-control.rules
+│   │   └── 90-zenbook-duo-display-control.conf
 │   ├── brightness-lock/
 │   │   ├── tweak.conf
 │   │   ├── zenbook-duo-brightness-lock.sh
@@ -91,6 +92,14 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.7 - Unified adaptive display control:
+- Replaced `display-toggle` and `auto-rotate` with `duo-display-control`, one state machine for physical keyboard docking, lower-panel enablement, primary-display selection, dual-panel geometry, and automatic rotation.
+- Enabled the UX8407 accelerometer with the checksum-verified ASUS Sensor Solution firmware while retaining Fedora's generic firmware for rollback and including the override in initramfs.
+- Added all four paired screen orientations with a one-second stability filter, atomic KScreen updates, duplicate suppression, and a shared transaction lock.
+- Added a TUI action for changing the rotation stability delay from immediate to 10 seconds, including decimal values, without restarting the sensor monitor.
+- Existing `display-toggle` installations migrate automatically, including the lower-display primary preference; superseded project services, scripts, and udev rules are removed.
+- Updated Tested On metadata for Fedora 44, kernel `7.0.14-201.fc44.x86_64`, KDE Plasma Wayland 6.7.3, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.6 - Physical display-state reconciliation:
 - Fixed `display-toggle` false detach events caused by input-remapper virtual keyboards copying the physical keyboard's name and USB IDs.

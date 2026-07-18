@@ -1,0 +1,12 @@
+[Unit]
+Description=Zenbook Duo display reconciliation (%i)
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/zenbook-duo-display-control
+ExecStart=/usr/local/bin/zenbook-duo-display-control.sh %i
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

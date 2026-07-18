@@ -1,0 +1,4 @@
+# Reconcile the full display state when the physical keyboard docks or detaches.
+# The service rechecks USB state after settling, so virtual devices are ignored.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0b05", ATTR{idProduct}=="1cd7", TAG+="systemd", ENV{SYSTEMD_WANTS}+="zenbook-duo-display-control@sync.service"
+ACTION=="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{PRODUCT}=="b05/1cd7/*", RUN+="/usr/bin/systemctl --no-block start zenbook-duo-display-control@sync.service"

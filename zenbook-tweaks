@@ -6,7 +6,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="2.7"
+VERSION="2.8"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -200,7 +200,7 @@ load_tweak()
 		return 1
 	fi
 
-	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
+	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_SUMMARY TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
 	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 
 	# shellcheck source=/dev/null
@@ -221,6 +221,7 @@ discover_tweaks()
 {
 	DISCOVERED_NAMES=()
 	DISCOVERED_DESCS=()
+	DISCOVERED_SUMMARIES=()
 	DISCOVERED_INFOS=()
 
 	for conf in "${TWEAKS_DIR}"/*/tweak.conf; do
@@ -230,13 +231,14 @@ discover_tweaks()
 		local name
 		name=$(basename "$dir")
 
-		unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
+		unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_SUMMARY TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
 		unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 		# shellcheck source=/dev/null
 		source "$conf"
 
 		DISCOVERED_NAMES+=("$name")
 		DISCOVERED_DESCS+=("${TWEAK_DESCRIPTION:-No description}")
+		DISCOVERED_SUMMARIES+=("${TWEAK_SUMMARY:-${TWEAK_DESCRIPTION:-No description}}")
 		DISCOVERED_INFOS+=("${TWEAK_INFO:-}")
 	done
 }
@@ -252,7 +254,7 @@ get_tweak_status_raw()
 	local dir="${TWEAKS_DIR}/${name}"
 	local conf="${dir}/tweak.conf"
 
-	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
+	unset TWEAK_NAME TWEAK_DESCRIPTION TWEAK_SUMMARY TWEAK_INFO TWEAK_FILES TWEAK_ACTIONS
 	unset -f tweak_pre_install tweak_post_install tweak_pre_uninstall tweak_post_uninstall tweak_status_check 2>/dev/null || true
 	# shellcheck source=/dev/null
 	source "$conf"
@@ -331,7 +333,11 @@ screen_tweaks()
 		local choice
 		if choice=$(run_menu "Tweaks   [X] installed  [~] update available  [ ] not installed" "${menu_opts[@]}"); then
 			if [[ $choice -lt ${#DISCOVERED_NAMES[@]} ]]; then
-				screen_tweak_detail "${DISCOVERED_NAMES[$choice]}" "${DISCOVERED_DESCS[$choice]}" "${DISCOVERED_INFOS[$choice]}"
+				screen_tweak_detail \
+					"${DISCOVERED_NAMES[$choice]}" \
+					"${DISCOVERED_DESCS[$choice]}" \
+					"${DISCOVERED_SUMMARIES[$choice]}" \
+					"${DISCOVERED_INFOS[$choice]}"
 			else
 				return 0
 			fi
@@ -341,12 +347,70 @@ screen_tweaks()
 	done
 }
 
-# Per-tweak detail screen — shows info, status, and actions
+# Scrollable technical details, opened explicitly from a tweak screen.
+screen_tweak_more_info()
+{
+	local name="$1"
+	local info_text="$2"
+	local info_lines=()
+	local terminal_lines page_size line_count offset=0
+
+	mapfile -t info_lines <<< "${info_text}"
+	line_count=${#info_lines[@]}
+	terminal_lines="$(tput lines 2>/dev/null || echo 24)"
+	[[ "${terminal_lines}" =~ ^[0-9]+$ ]] || terminal_lines=24
+	page_size=$((terminal_lines - 17))
+	[[ "${page_size}" -ge 5 ]] || page_size=5
+
+	while true; do
+		local end=$((offset + page_size))
+		local i
+		[[ "${end}" -le "${line_count}" ]] || end="${line_count}"
+
+		clear_screen
+		{
+			show_banner
+			echo -e "  ${C_BOLD}${name}${C_RESET}  ${C_DIM}— More info${C_RESET}"
+			echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
+			echo ""
+			for ((i = offset; i < end; i++)); do
+				echo -e "  ${C_DIM}${info_lines[$i]}${C_RESET}"
+			done
+			echo ""
+			echo -e "  ${C_DIM}Lines $((offset + 1))-${end} of ${line_count}${C_RESET}"
+			echo -e "  ${C_DIM}↑/↓ Scroll   ←/→ Page   Enter/q Back${C_RESET}"
+		} >/dev/tty
+
+		local key
+		key=$(read_key </dev/tty)
+		case "${key}" in
+			up)
+				[[ "${offset}" -gt 0 ]] && offset=$((offset - 1))
+				;;
+			down)
+				[[ $((offset + page_size)) -lt "${line_count}" ]] && offset=$((offset + 1))
+				;;
+			left)
+				offset=$((offset - page_size))
+				[[ "${offset}" -ge 0 ]] || offset=0
+				;;
+			right)
+				if [[ $((offset + page_size)) -lt "${line_count}" ]]; then
+					offset=$((offset + page_size))
+				fi
+				;;
+			enter|q) return 0 ;;
+		esac
+	done
+}
+
+# Per-tweak detail screen — shows a simple summary, status, and actions.
 screen_tweak_detail()
 {
 	local name="$1"
 	local desc="$2"
-	local info_text="$3"
+	local summary_text="$3"
+	local info_text="$4"
 
 	while true; do
 		local raw_status
@@ -371,6 +435,14 @@ screen_tweak_detail()
 			"installed"|"installed (modified)"|"partially installed")
 				action_opts+=("Reinstall")
 				action_handlers+=("install")
+				;;
+		esac
+		if [[ -n "${info_text}" ]]; then
+			action_opts+=("More info")
+			action_handlers+=("more-info")
+		fi
+		case "$raw_status" in
+			"installed"|"installed (modified)"|"partially installed")
 				load_tweak "$name"
 				if declare -p TWEAK_ACTIONS &>/dev/null; then
 					local custom_action
@@ -406,11 +478,11 @@ screen_tweak_detail()
 				echo -e "  ${C_DIM}────────────────────────────────────────────────${C_RESET}"
 				echo ""
 
-				# Show info text
-				if [[ -n "$info_text" ]]; then
+				if [[ -n "$summary_text" ]]; then
+					echo -e "  ${C_BOLD}What it does${C_RESET}"
 					while IFS= read -r line; do
-						echo -e "  ${C_DIM}${line}${C_RESET}"
-					done <<< "$info_text"
+						echo -e "  ${C_WHITE}${line}${C_RESET}"
+					done <<< "$summary_text"
 					echo ""
 				fi
 
@@ -461,6 +533,9 @@ screen_tweak_detail()
 						"uninstall")
 							do_uninstall_interactive "$name"
 							break
+							;;
+						"more-info")
+							screen_tweak_more_info "$name" "$info_text"
 							;;
 						custom:*)
 							do_tweak_action_interactive "$name" "$chosen" "${handler#custom:}"

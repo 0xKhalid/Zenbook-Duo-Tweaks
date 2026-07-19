@@ -1,0 +1,17 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Id": "zenbookduospanbothscreens",
+        "Name": "Span Both Screens",
+        "Description": "Span maximized windows across both Zenbook Duo displays",
+        "Version": "2.8",
+        "License": "MIT",
+        "Authors": [
+            {
+                "Name": "Zenbook-Duo-Tweaks"
+            }
+        ]
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}

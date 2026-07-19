@@ -17,13 +17,14 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 
 | Tweak | Description |
 |-------|-------------|
-| `duo-display-control` | Manage both displays from keyboard docking and chassis orientation |
-| `brightness-lock` | Keep lower built-in screen (`eDP-2`) at 100% brightness |
-| `kbd-backlight` | ASUS keyboard backlight control (levels 0-3) |
-| `speaker-fix` | Enable laptop speaker (sof-soundwire Speaker Switch) |
-| `whisper-dictate` | Live on-device voice-to-text transcription with local model picker |
-| `heic-support` | Native HEIC/HEIF image support (RPM Fusion Free) |
-| `touchpad-fix` | Disable-while-typing for detachable keyboard touchpad |
+| `duo-display-control` | Automatic dual-screen control and rotation |
+| `span-both-screens` | Span maximized windows across both screens |
+| `brightness-lock` | Keep the lower screen at full brightness |
+| `kbd-backlight` | Control the detachable keyboard backlight |
+| `speaker-fix` | Fix silent built-in speakers |
+| `whisper-dictate` | Private, on-device voice typing |
+| `heic-support` | Open HEIC and HEIF images in KDE |
+| `touchpad-fix` | Stop cursor jumps while typing |
 
 ## Usage
 
@@ -31,7 +32,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 sudo ./zenbook-tweaks
 ```
 
-Launches an interactive TUI — browse tweaks, view details and usage instructions, install/uninstall. Arrow keys to navigate, Enter to select. Requires `sudo` for install/uninstall.
+Launches an interactive TUI — browse tweaks, read a simple summary, open **More info** for technical details, and install or uninstall. Arrow keys navigate and Enter selects. Requires `sudo` for install/uninstall.
 
 ## Adding New Tweaks
 
@@ -39,8 +40,9 @@ Launches an interactive TUI — browse tweaks, view details and usage instructio
 2. Add your script, service, or rule files inside it
 3. Create a `tweak.conf` file defining:
    - `TWEAK_NAME` — short identifier
-   - `TWEAK_DESCRIPTION` — one-line description
-   - `TWEAK_INFO` — multiline usage/instructions text (shown in TUI)
+   - `TWEAK_DESCRIPTION` — short one-line label for the tweak list
+   - `TWEAK_SUMMARY` — plain-language explanation shown on the tweak screen
+   - `TWEAK_INFO` — technical details shown in the tweak's **More info** view
    - `TWEAK_FILES` — array of `"source:dest:permissions"` entries (can be empty for package-only tweaks)
    - Optional hook functions: `tweak_pre_install`, `tweak_post_install`, `tweak_pre_uninstall`, `tweak_post_uninstall`
    - Optional `tweak_status_check` — custom status function for tweaks without files (must echo one of: `not installed`, `partially installed`, `installed`)
@@ -58,10 +60,16 @@ Zenbook-Duo-Tweaks/
 │   ├── duo-display-control/
 │   │   ├── tweak.conf
 │   │   ├── zenbook-duo-display-control.sh
+│   │   ├── zenbook-duo-icon-layout.js
 │   │   ├── zenbook-duo-display-control.service
 │   │   ├── zenbook-duo-display-control@.service
 │   │   ├── 99-zenbook-duo-display-control.rules
 │   │   └── 90-zenbook-duo-display-control.conf
+│   ├── span-both-screens/
+│   │   ├── tweak.conf
+│   │   ├── metadata.json
+│   │   ├── zenbook-duo-span-both-screens
+│   │   └── contents/code/main.js
 │   ├── brightness-lock/
 │   │   ├── tweak.conf
 │   │   ├── zenbook-duo-brightness-lock.sh
@@ -92,6 +100,18 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.8 - Display, touch, desktop, and window improvements:
+- Simplified every tweak screen with a short plain-language summary and moved technical details into a separate scrollable **More info** view.
+- Added same-size portrait icon fitting for both built-in Folder View desktops, moving only icons outside the visible grid and using free space on the other active panel when required.
+- Kept independent landscape and portrait position profiles: normal and upside-down share landscape placement, while left and right share portrait placement.
+- Added a pre-change Plasma profile barrier so cross-resolution position tracking cannot copy portrait edits over the landscape layout.
+- Corrected the inverted upper RAYD0001 touchscreen with a narrowly matched 180-degree libinput base calibration that follows eDP-1 through all four automatic orientations without changing the lower touchscreen or either stylus interface.
+- Added a timestamped pre-v2.8 Plasma layout backup, an automatic `fit-icons` helper, geometry/profile validation, and non-blocking failure handling so icon-layout errors never undo a successful display rotation.
+- Added the standalone `span-both-screens` tweak using Fedora's stock KWin.
+- Maximize-button clicks, titlebar double-clicks, and `Meta+PgUp` span normal resizable windows across both built-in displays; repeating the action restores the saved window state.
+- Added native-style tear-off, orientation-aware geometry updates, dock/undock reconciliation, and a titlebar Span/Restore action while preserving native per-screen dragging and snapping.
+- Updated Tested On metadata for Fedora 44, kernel `7.0.14-201.fc44.x86_64`, KDE Plasma Wayland 6.7.3, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.7 - Unified adaptive display control:
 - Replaced `display-toggle` and `auto-rotate` with `duo-display-control`, one state machine for physical keyboard docking, lower-panel enablement, primary-display selection, dual-panel geometry, and automatic rotation.

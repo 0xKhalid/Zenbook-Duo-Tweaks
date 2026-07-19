@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN_ID="zenbookduospanbothscreens"
+PLUGIN_DIR="/usr/share/kwin/scripts/${PLUGIN_ID}"
+PLUGIN_SCRIPT="${PLUGIN_DIR}/contents/code/main.js"
+PLUGIN_KEY="${PLUGIN_ID}Enabled"
+SCRIPT_CONFIG_GROUP="Script-${PLUGIN_ID}"
+STATE_ROOT="/var/lib/zenbook-tweaks/state/span-both-screens"
+BACKUP_ROOT="/var/lib/zenbook-tweaks/backups/span-both-screens"
+
+TARGET_USER=""
+TARGET_UID=""
+TARGET_HOME=""
+
+resolve_target_user()
+{
+	local requested="${1:-}"
+	local session active type class name
+
+	if [[ -n "${requested}" ]]; then
+		TARGET_USER="${requested}"
+	elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
+		TARGET_USER="${SUDO_USER}"
+	elif [[ "${EUID}" -ne 0 ]]; then
+		TARGET_USER="$(id -un)"
+	else
+		while read -r session _; do
+			[[ -n "${session}" ]] || continue
+			active="$(loginctl show-session "${session}" -p Active --value 2>/dev/null || true)"
+			type="$(loginctl show-session "${session}" -p Type --value 2>/dev/null || true)"
+			class="$(loginctl show-session "${session}" -p Class --value 2>/dev/null || true)"
+			name="$(loginctl show-session "${session}" -p Name --value 2>/dev/null || true)"
+			if [[ "${active}" == yes && "${class}" == user && ( "${type}" == wayland || "${type}" == x11 ) ]]; then
+				TARGET_USER="${name}"
+				break
+			fi
+		done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+	fi
+
+	if [[ -z "${TARGET_USER}" ]] || ! id "${TARGET_USER}" >/dev/null 2>&1; then
+		echo "ERROR: Could not determine the Plasma desktop user." >&2
+		return 1
+	fi
+	TARGET_UID="$(id -u "${TARGET_USER}")"
+	TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
+	if [[ -z "${TARGET_HOME}" || ! -d "${TARGET_HOME}" ]]; then
+		echo "ERROR: Home directory was not found for ${TARGET_USER}." >&2
+		return 1
+	fi
+}
+
+as_target_user()
+{
+	local runtime_dir="/run/user/${TARGET_UID}"
+	local bus_address="unix:path=${runtime_dir}/bus"
+
+	if [[ "$(id -u)" == "${TARGET_UID}" ]]; then
+		env HOME="${TARGET_HOME}" USER="${TARGET_USER}" LOGNAME="${TARGET_USER}" \
+			XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus_address}" "$@"
+	else
+		runuser -u "${TARGET_USER}" -- env HOME="${TARGET_HOME}" USER="${TARGET_USER}" \
+			LOGNAME="${TARGET_USER}" XDG_RUNTIME_DIR="${runtime_dir}" \
+			DBUS_SESSION_BUS_ADDRESS="${bus_address}" "$@"
+	fi
+}
+
+session_qdbus()
+{
+	as_target_user qdbus-qt6 "$@"
+}
+
+config_read()
+{
+	as_target_user kreadconfig6 "$@"
+}
+
+config_write()
+{
+	as_target_user kwriteconfig6 "$@"
+}
+
+session_available()
+{
+	[[ -S "/run/user/${TARGET_UID}/bus" ]] &&
+		session_qdbus org.kde.KWin / org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1
+}
+
+script_loaded()
+{
+	[[ "$(session_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded "${PLUGIN_ID}" 2>/dev/null || true)" == true ]]
+}
+
+verify_package()
+{
+	[[ -r "${PLUGIN_DIR}/metadata.json" && -r "${PLUGIN_SCRIPT}" ]] || {
+		echo "ERROR: Span Both Screens package files are missing." >&2
+		return 1
+	}
+	grep -q '"Id": "zenbookduospanbothscreens"' "${PLUGIN_DIR}/metadata.json" || {
+		echo "ERROR: KWin package metadata has the wrong plugin ID." >&2
+		return 1
+	}
+	if grep -Eq 'registerShortcut|Meta\+Shift\+Space|plasmaPanel|panelById' "${PLUGIN_SCRIPT}"; then
+		echo "ERROR: Refusing a package containing shortcut or panel-management code." >&2
+		return 1
+	fi
+}
+
+backup_user_settings()
+{
+	local state_dir="${STATE_ROOT}/${TARGET_UID}"
+	local state_file="${state_dir}/active.env"
+	local backup_dir stamp previous
+
+	[[ "${EUID}" -eq 0 ]] || {
+		echo "ERROR: Installation must run as root." >&2
+		return 1
+	}
+	if [[ -r "${state_file}" ]]; then
+		return 0
+	fi
+
+	stamp="$(date +%Y%m%d-%H%M%S)"
+	backup_dir="${BACKUP_ROOT}/${TARGET_UID}/${stamp}"
+	mkdir -p "${state_dir}" "${backup_dir}"
+	chmod 700 "${state_dir}" "${backup_dir}"
+	for file in kwinrc; do
+		if [[ -f "${TARGET_HOME}/.config/${file}" ]]; then
+			cp -a -- "${TARGET_HOME}/.config/${file}" "${backup_dir}/${file}"
+		fi
+	done
+	previous="$(config_read --file kwinrc --group Plugins --key "${PLUGIN_KEY}" \
+		--default __ABSENT__ 2>/dev/null || true)"
+	{
+		printf 'TARGET_USER=%q\n' "${TARGET_USER}"
+		printf 'TARGET_UID=%q\n' "${TARGET_UID}"
+		printf 'TARGET_HOME=%q\n' "${TARGET_HOME}"
+		printf 'PLUGIN_PREVIOUS=%q\n' "${previous}"
+		printf 'BACKUP_DIR=%q\n' "${backup_dir}"
+	} > "${state_file}"
+	chmod 600 "${state_file}"
+	echo "Saved user-session safety backup: ${backup_dir}"
+}
+
+enable_and_load()
+{
+	local script_id
+
+	config_write --file kwinrc --group Plugins --key "${PLUGIN_KEY}" true
+	if ! session_available; then
+		echo "Plasma session is unavailable; the script will load at the next login."
+		return 2
+	fi
+	session_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript \
+		"${PLUGIN_ID}" >/dev/null 2>&1 || true
+	script_id="$(session_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
+		"${PLUGIN_SCRIPT}" "${PLUGIN_ID}" 2>/dev/null || true)"
+	if [[ ! "${script_id}" =~ ^[0-9]+$ ]]; then
+		echo "ERROR: KWin did not accept the Span Both Screens script." >&2
+		return 1
+	fi
+	session_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null
+	script_loaded || {
+		echo "ERROR: KWin did not report the Span Both Screens script as loaded." >&2
+		return 1
+	}
+}
+
+request_restore_all()
+{
+	local request
+
+	script_loaded || return 0
+	request="$(config_read --file kwinrc --group "${SCRIPT_CONFIG_GROUP}" \
+		--key RestoreRequest --default 0 2>/dev/null || echo 0)"
+	[[ "${request}" =~ ^[0-9]+$ ]] || request=0
+	request=$((request + 1))
+	config_write --file kwinrc --group "${SCRIPT_CONFIG_GROUP}" --key RestoreRequest "${request}"
+	session_qdbus org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null
+	sleep 0.25
+}
+
+install_for_user()
+{
+	local load_result=0
+
+	verify_package
+	backup_user_settings
+	if enable_and_load; then
+		load_result=0
+	else
+		load_result=$?
+		if [[ "${load_result}" -ne 2 ]]; then
+			return 1
+		fi
+	fi
+
+	if session_available; then
+		session_qdbus org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
+	fi
+	echo "Span Both Screens is enabled for ${TARGET_USER}."
+}
+
+uninstall_for_user()
+{
+	local state_file="${STATE_ROOT}/${TARGET_UID}/active.env"
+	local previous="__ABSENT__"
+
+	if session_available; then
+		request_restore_all || echo "WARNING: Could not request restoration of spanned windows." >&2
+		session_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript \
+			"${PLUGIN_ID}" >/dev/null 2>&1 || true
+	fi
+	if [[ -r "${state_file}" ]]; then
+		# The state file is root-owned and contains only values written by this helper.
+		# shellcheck disable=SC1090
+		source "${state_file}"
+		previous="${PLUGIN_PREVIOUS:-__ABSENT__}"
+	fi
+	if [[ "${previous}" == __ABSENT__ ]]; then
+		config_write --file kwinrc --group Plugins --key "${PLUGIN_KEY}" --delete
+	else
+		config_write --file kwinrc --group Plugins --key "${PLUGIN_KEY}" "${previous}"
+	fi
+	config_write --file kwinrc --group "${SCRIPT_CONFIG_GROUP}" \
+		--key RestoreRequest --delete 2>/dev/null || true
+	if session_available; then
+		session_qdbus org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
+	fi
+	rm -f -- "${state_file}"
+	rmdir --ignore-fail-on-non-empty "${STATE_ROOT}/${TARGET_UID}" "${STATE_ROOT}" 2>/dev/null || true
+	echo "Span Both Screens was disabled for ${TARGET_USER}."
+}
+
+show_status()
+{
+	local enabled loaded="unavailable"
+	enabled="$(config_read --file kwinrc --group Plugins --key "${PLUGIN_KEY}" \
+		--default false 2>/dev/null || echo false)"
+	if session_available; then
+		script_loaded && loaded=true || loaded=false
+	fi
+	printf 'User: %s\n' "${TARGET_USER}"
+	printf 'KWin package: %s\n' "$([[ -r "${PLUGIN_SCRIPT}" ]] && echo installed || echo missing)"
+	printf 'Enabled at login: %s\n' "${enabled}"
+	printf 'Loaded in current session: %s\n' "${loaded}"
+	[[ -r "${PLUGIN_SCRIPT}" && "${enabled}" == true ]]
+}
+
+usage()
+{
+	echo "Usage: $(basename "$0") <install|uninstall|reload|status> [user]" >&2
+}
+
+command="${1:-status}"
+resolve_target_user "${2:-}"
+case "${command}" in
+	install)
+		[[ "${EUID}" -eq 0 ]] || { echo "ERROR: install requires root." >&2; exit 1; }
+		install_for_user
+		;;
+	uninstall)
+		[[ "${EUID}" -eq 0 ]] || { echo "ERROR: uninstall requires root." >&2; exit 1; }
+		uninstall_for_user
+		;;
+	reload)
+		verify_package
+		enable_and_load
+		;;
+	status)
+		show_status
+		;;
+	*)
+		usage
+		exit 2
+		;;
+esac

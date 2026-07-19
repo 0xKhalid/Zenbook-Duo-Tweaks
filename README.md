@@ -101,6 +101,14 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 ## Changelog
 
+### v2.9 - Explicit primary display selection:
+- Added a `Set primary display` action to `duo-display-control` with explicit Upper screen (`eDP-1`) and Lower screen (`eDP-2`) choices.
+- The selected preference is applied immediately and remembered across reboot, rotation, and keyboard dock/undock events without restarting the sensor monitor.
+- Choosing the lower screen makes it primary while detached, restores the upper screen while docked, and makes the lower screen primary again after detaching.
+- Replaced `LOWER_DISPLAY_PRIMARY_WHEN_DETACHED=0|1` with `PRIMARY_DISPLAY_WHEN_DETACHED=upper|lower`, including automatic migration of managed and legacy preferences.
+- Expanded display-control status with the remembered preference and active KDE primary output.
+- Updated Tested On metadata for Fedora 44, kernel `7.0.14-201.fc44.x86_64`, KDE Plasma Wayland 6.7.3, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
+
 ### v2.8 - Display, touch, desktop, and window improvements:
 - Simplified every tweak screen with a short plain-language summary and moved technical details into a separate scrollable **More info** view.
 - Added same-size portrait icon fitting for both built-in Folder View desktops, moving only icons outside the visible grid and using free space on the other active panel when required.

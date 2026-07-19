@@ -5,7 +5,6 @@ ACTION="${1:-monitor}"
 REQUESTED_ORIENTATION="${2:-}"
 TOP_OUTPUT="${TOP_OUTPUT:-eDP-1}"
 BOTTOM_OUTPUT="${BOTTOM_OUTPUT:-eDP-2}"
-LOWER_DISPLAY_PRIMARY_WHEN_DETACHED="${LOWER_DISPLAY_PRIMARY_WHEN_DETACHED:-0}"
 PHYSICAL_KEYBOARD_VENDOR_ID="${PHYSICAL_KEYBOARD_VENDOR_ID:-0b05}"
 PHYSICAL_KEYBOARD_PRODUCT_ID="${PHYSICAL_KEYBOARD_PRODUCT_ID:-1cd7}"
 CONFIG_FILE="${CONFIG_FILE:-/etc/default/zenbook-duo-display-control}"
@@ -91,12 +90,31 @@ is_keyboard_physically_docked()
 	return 1
 }
 
-lower_display_should_be_primary()
+read_primary_display_preference()
 {
-	case "${LOWER_DISPLAY_PRIMARY_WHEN_DETACHED,,}" in
-		1|true|yes|on) return 0 ;;
-		*) return 1 ;;
+	local value legacy_value
+
+	value="$(awk -F= '/^[[:space:]]*PRIMARY_DISPLAY_WHEN_DETACHED[[:space:]]*=/ { value=$2 } END { gsub(/[[:space:]]/, "", value); print tolower(value) }' "${CONFIG_FILE}" 2>/dev/null || true)"
+	if [[ -z "${value}" ]]; then
+		value="${PRIMARY_DISPLAY_WHEN_DETACHED:-}"
+	fi
+	case "${value,,}" in
+		upper|lower) echo "${value,,}"; return ;;
 	esac
+
+	legacy_value="$(awk -F= '/^[[:space:]]*LOWER_DISPLAY_PRIMARY_WHEN_DETACHED[[:space:]]*=/ { value=$2 } END { gsub(/[[:space:]]/, "", value); print tolower(value) }' "${CONFIG_FILE}" 2>/dev/null || true)"
+	if [[ -z "${legacy_value}" ]]; then
+		legacy_value="${LOWER_DISPLAY_PRIMARY_WHEN_DETACHED:-0}"
+	fi
+	case "${legacy_value,,}" in
+		1|true|yes|on) echo lower ;;
+		*) echo upper ;;
+	esac
+}
+
+primary_output_from_json()
+{
+	jq -r '[.outputs[] | select(.connected == true and .enabled == true and (((.priority // 0) == 1) or ((.primary // false) == true))) | .name][0] // "unknown"'
 }
 
 resolve_active_graphical_session()
@@ -581,8 +599,8 @@ apply_display_state()
 (
 	local requested_mode="$1"
 	local orientation="$2"
-	local config_json connected_bottom enabled_top enabled_bottom state_mode
-	local state_label saved_state primary_state attempt current_geometries target_geometries
+	local config_json connected_bottom enabled_top enabled_bottom state_mode current_primary
+	local state_label saved_state primary_preference target_primary attempt current_geometries target_geometries
 	local args=()
 
 	orientation_is_valid "${orientation}" || {
@@ -623,11 +641,21 @@ apply_display_state()
 	connected_bottom="$(jq -r --arg name "${BOTTOM_OUTPUT}" '[.outputs[] | select(.name == $name and .connected == true)] | length > 0' <<< "${config_json}")"
 	enabled_top="$(jq -r --arg name "${TOP_OUTPUT}" '[.outputs[] | select(.name == $name and .connected == true and .enabled == true)] | length > 0' <<< "${config_json}")"
 	enabled_bottom="$(jq -r --arg name "${BOTTOM_OUTPUT}" '[.outputs[] | select(.name == $name and .connected == true and .enabled == true)] | length > 0' <<< "${config_json}")"
-	primary_state=0
-	lower_display_should_be_primary && primary_state=1
-	state_label="${state_mode}:${orientation}:${enabled_top}:${enabled_bottom}:${primary_state}"
+	primary_preference="$(read_primary_display_preference)"
+	current_primary="$(primary_output_from_json <<< "${config_json}")"
+	target_primary="${TOP_OUTPUT}"
+	if [[ "${state_mode}" == detached && "${primary_preference}" == lower ]]; then
+		if [[ "${requested_mode}" == detached && "${connected_bottom}" == true ]] ||
+			[[ "${requested_mode}" == rotate && "${enabled_bottom}" == true ]]
+		then
+			target_primary="${BOTTOM_OUTPUT}"
+		fi
+	fi
+	state_label="${state_mode}:${orientation}:${enabled_top}:${enabled_bottom}:${primary_preference}"
 	saved_state="$(cat "${STATE_FILE}" 2>/dev/null || true)"
-	if [[ "${requested_mode}" != "docked" && "${saved_state}" == "${state_label}" ]]; then
+	if [[ "${requested_mode}" != "docked" && "${saved_state}" == "${state_label}" &&
+		"${current_primary}" == "${target_primary}" ]]
+	then
 		current_geometries="$(builtin_output_geometries "${config_json}")"
 		if ! prepare_icon_layout "${orientation}" "${current_geometries}"; then
 			log "WARNING: Could not isolate the unchanged portrait and landscape icon profiles"
@@ -649,21 +677,20 @@ apply_display_state()
 	fi
 
 	if [[ "${requested_mode}" == "docked" ]]; then
-		if lower_display_should_be_primary && [[ "${enabled_top}" == "true" ]]; then
-			args+=("output.${TOP_OUTPUT}.primary")
-		fi
 		if [[ "${enabled_bottom}" == "true" ]]; then
 			args+=("output.${BOTTOM_OUTPUT}.rotation.none" "output.${BOTTOM_OUTPUT}.position.0,1125" "output.${BOTTOM_OUTPUT}.disable")
 		fi
 	elif [[ "${requested_mode}" == "detached" ]]; then
 		if [[ "${connected_bottom}" == "true" ]]; then
 			args+=("output.${BOTTOM_OUTPUT}.enable" "output.${BOTTOM_OUTPUT}.rotation.${BOTTOM_ROTATION}" "output.${BOTTOM_OUTPUT}.position.${BOTTOM_POSITION}")
-			if lower_display_should_be_primary; then
-				args+=("output.${BOTTOM_OUTPUT}.primary")
-			fi
 		fi
 	elif [[ "${enabled_bottom}" == "true" ]]; then
 		args+=("output.${BOTTOM_OUTPUT}.rotation.${BOTTOM_ROTATION}" "output.${BOTTOM_OUTPUT}.position.${BOTTOM_POSITION}")
+	fi
+	if [[ "${target_primary}" == "${TOP_OUTPUT}" && "${enabled_top}" == true ]] ||
+		[[ "${target_primary}" == "${BOTTOM_OUTPUT}" && ("${connected_bottom}" == true || "${enabled_bottom}" == true) ]]
+	then
+		args+=("output.${target_primary}.primary")
 	fi
 
 	if [[ ${#args[@]} -eq 0 ]]; then
@@ -674,13 +701,13 @@ apply_display_state()
 	for attempt in $(seq 1 "${KSCREEN_RETRY_COUNT}"); do
 		if run_kscreen "${args[@]}" >/dev/null 2>&1; then
 			if [[ "${requested_mode}" == "docked" ]]; then
-				printf '%s\n' "docked:normal:${enabled_top}:false:${primary_state}" > "${STATE_FILE}"
+				printf '%s\n' "docked:normal:${enabled_top}:false:${primary_preference}" > "${STATE_FILE}"
 			elif [[ "${requested_mode}" == "detached" ]]; then
-				printf '%s\n' "detached:${orientation}:${enabled_top}:${connected_bottom}:${primary_state}" > "${STATE_FILE}"
+				printf '%s\n' "detached:${orientation}:${enabled_top}:${connected_bottom}:${primary_preference}" > "${STATE_FILE}"
 			else
-				printf '%s\n' "detached:${orientation}:${enabled_top}:${enabled_bottom}:${primary_state}" > "${STATE_FILE}"
+				printf '%s\n' "detached:${orientation}:${enabled_top}:${enabled_bottom}:${primary_preference}" > "${STATE_FILE}"
 			fi
-			log "SUCCESS: mode=${requested_mode}, orientation=${orientation}, top=${enabled_top}, bottom=${connected_bottom}, primary=${primary_state}, user=${SESSION_USER}, attempt=${attempt}"
+			log "SUCCESS: mode=${requested_mode}, orientation=${orientation}, top=${enabled_top}, bottom=${connected_bottom}, primary=${target_primary}, preference=${primary_preference}, user=${SESSION_USER}, attempt=${attempt}"
 			if [[ "${requested_mode}" != "docked" ]]; then
 				config_json="$(run_kscreen -j 2>/dev/null || true)"
 				if [[ -n "${config_json}" ]]; then
@@ -849,7 +876,7 @@ show_touch_calibration_status()
 show_status()
 {
 	local firmware="/usr/lib/firmware/updates/intel/ish/ish_ptl.bin"
-	local found_accel=false dev name orientation rotation_delay
+	local found_accel=false dev name orientation rotation_delay primary_preference config_json active_primary
 
 	if [[ -f "${firmware}" ]]; then
 		echo "Firmware override: installed"
@@ -868,8 +895,23 @@ show_status()
 	[[ "${found_accel}" == true ]] || echo "Accelerometer: not exposed (reboot may be required)"
 	orientation="$(read_sensor_orientation || true)"
 	rotation_delay="$(read_rotation_stability_delay)"
+	primary_preference="$(read_primary_display_preference)"
 	echo "Current orientation: ${orientation:-unavailable}"
 	echo "Rotation stability delay: ${rotation_delay} second(s)"
+	if [[ "${primary_preference}" == lower ]]; then
+		echo "Primary display preference (detached): Lower screen (${BOTTOM_OUTPUT})"
+	else
+		echo "Primary display preference (detached): Upper screen (${TOP_OUTPUT})"
+	fi
+	active_primary="unavailable"
+	if resolve_active_graphical_session && check_graphical_session_ready; then
+		build_kscreen_environment
+		config_json="$(run_kscreen -j 2>/dev/null || true)"
+		if [[ -n "${config_json}" ]]; then
+			active_primary="$(primary_output_from_json <<< "${config_json}")"
+		fi
+	fi
+	echo "Active KDE primary display: ${active_primary}"
 	if [[ -r "${ICON_LAYOUT_SCRIPT}" ]]; then
 		echo "Portrait icon fitting: installed; icon and label sizes are preserved"
 	else

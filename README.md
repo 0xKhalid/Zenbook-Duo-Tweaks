@@ -18,6 +18,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | Tweak | Description |
 |-------|-------------|
 | `duo-display-control` | Automatic dual-screen control and rotation |
+| `intel-display-stability` | Prevent Intel screen corruption and freezes |
 | `span-both-screens` | Span maximized windows across both screens |
 | `brightness-lock` | Keep the lower screen at full brightness |
 | `kbd-backlight` | Control the detachable keyboard backlight |
@@ -43,9 +44,9 @@ Launches an interactive TUI — browse tweaks, read a simple summary, open **Mor
    - `TWEAK_DESCRIPTION` — short one-line label for the tweak list
    - `TWEAK_SUMMARY` — plain-language explanation shown on the tweak screen
    - `TWEAK_INFO` — technical details shown in the tweak's **More info** view
-   - `TWEAK_FILES` — array of `"source:dest:permissions"` entries (can be empty for package-only tweaks)
+   - `TWEAK_FILES` — array of `"source:dest:permissions"` entries (can be empty for hook-only tweaks)
    - Optional hook functions: `tweak_pre_install`, `tweak_post_install`, `tweak_pre_uninstall`, `tweak_post_uninstall`
-   - Optional `tweak_status_check` — custom status function for tweaks without files (must echo one of: `not installed`, `partially installed`, `installed`)
+   - Optional `tweak_status_check` — custom status function for tweaks without files (must echo one of: `not installed`, `partially installed`, `installed (modified)`, `installed`)
    - Optional `TWEAK_ACTIONS` — array of custom installed-tweak actions in `"Label:function_name"` format
 
 The TUI auto-discovers all tweaks from `tweaks/*/tweak.conf`.
@@ -65,6 +66,8 @@ Zenbook-Duo-Tweaks/
 │   │   ├── zenbook-duo-display-control@.service
 │   │   ├── 99-zenbook-duo-display-control.rules
 │   │   └── 90-zenbook-duo-display-control.conf
+│   ├── intel-display-stability/
+│   │   └── tweak.conf
 │   ├── span-both-screens/
 │   │   ├── tweak.conf
 │   │   ├── metadata.json
@@ -100,6 +103,14 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.10 - Intel display stability workaround:
+- Added the optional `intel-display-stability` tweak for Intel `xe` Panel Replay corruption, flashing, and display freezes.
+- Installs `xe.enable_psr2_sel_fetch=0` and `xe.enable_panel_replay=0` across every installed boot entry and `/etc/kernel/cmdline`, so future Fedora kernels inherit the workaround.
+- Reinstalling adopts and normalizes matching manual settings; uninstalling removes only the two managed arguments.
+- Added persistent, boot-entry, and running-kernel status reporting with a clear reboot-required indicator.
+- Failed pre-uninstall hooks now stop cleanly instead of reporting a successful uninstall.
+- Updated Tested On metadata for Fedora 44, kernel `7.0.14-201.fc44.x86_64`, KDE Plasma Wayland 6.7.3, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.9 - Explicit primary display selection:
 - Added a `Set primary display` action to `duo-display-control` with explicit Upper screen (`eDP-1`) and Lower screen (`eDP-2`) choices.

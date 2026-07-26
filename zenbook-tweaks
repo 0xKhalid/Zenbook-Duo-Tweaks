@@ -6,7 +6,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="2.9"
+VERSION="2.10"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -725,7 +725,13 @@ do_uninstall_interactive()
 	} >/dev/tty
 
 	if type -t tweak_pre_uninstall &>/dev/null; then
-		tweak_pre_uninstall >/dev/tty
+		if ! tweak_pre_uninstall >/dev/tty; then
+			error "Pre-uninstall failed for ${TWEAK_NAME}" >/dev/tty
+			echo ""                                      >/dev/tty
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}" >/dev/tty
+			read -rsn1 </dev/tty
+			return
+		fi
 	fi
 
 	for entry in "${TWEAK_FILES[@]}"; do

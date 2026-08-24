@@ -8,8 +8,8 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 |---|---|
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 44 |
-| **Desktop** | KDE Plasma Wayland 6.7.3 |
-| **Kernel** | 7.0.14-201.fc44.x86_64 |
+| **Desktop** | KDE Plasma Wayland 6.7.4 |
+| **Kernel** | 7.1.8-200.fc44.x86_64 |
 | **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
 | **Driver** | `xe` |
 
@@ -103,6 +103,12 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.11 - Reliable post-resume lower-screen reconciliation:
+- Fixed a resume race where an orientation event could record connected `eDP-2` as disabled before the physical-keyboard sync enabled it.
+- Every display event now derives the complete panel state from the physical USB keyboard: attached turns `eDP-2` off, while absent turns it on.
+- Bluetooth keyboard connectivity remains independent and never makes the device appear physically docked.
+- Updated Tested On metadata for Fedora 44, kernel `7.1.8-200.fc44.x86_64`, KDE Plasma Wayland 6.7.4, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.10 - Intel display stability workaround:
 - Added the optional `intel-display-stability` tweak for Intel `xe` Panel Replay corruption, flashing, and display freezes.

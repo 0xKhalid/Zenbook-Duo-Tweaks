@@ -1,6 +1,7 @@
 # OS
 .DS_Store
 Thumbs.db
+.nfs*
 
 # Editors
 *.swp
@@ -8,13 +9,22 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+.metadata/
+.settings/
 .claude/
 .codex
 AGENTS.md
 
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
 # Temp
 *.tmp
 *.bak
+*.log
 
 # Local tests
 tests/

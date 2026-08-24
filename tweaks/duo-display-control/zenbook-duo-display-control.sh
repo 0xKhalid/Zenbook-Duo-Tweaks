@@ -66,7 +66,7 @@ usage()
 	echo "Usage: $0 <monitor|sync|apply|fit-icons|status> [orientation]"
 	echo "  monitor              reconcile at boot, then watch orientation events"
 	echo "  sync                 reconcile keyboard state and current orientation"
-	echo "  apply <orientation>  rotate enabled displays without changing enablement"
+	echo "  apply <orientation>  reconcile keyboard state at the requested orientation"
 	echo "  fit-icons [orientation]"
 	echo "                       fit Folder View icons to the current portrait grids"
 	echo "  status               show firmware, sensor, keyboard, and service policy"
@@ -599,7 +599,7 @@ apply_display_state()
 (
 	local requested_mode="$1"
 	local orientation="$2"
-	local config_json connected_bottom enabled_top enabled_bottom state_mode current_primary
+	local config_json connected_bottom enabled_top enabled_bottom target_bottom_enabled current_primary
 	local state_label saved_state primary_preference target_primary attempt current_geometries target_geometries
 	local args=()
 
@@ -621,13 +621,11 @@ apply_display_state()
 		fi
 		requested_mode="docked"
 		orientation="normal"
-	elif [[ "${requested_mode}" != "rotate" ]]; then
-		requested_mode="detached"
-	fi
-	if [[ "${requested_mode}" == "docked" ]]; then
-		state_mode="docked"
 	else
-		state_mode="detached"
+		# Sensor events and explicit syncs enforce the same physical invariant.
+		# This prevents a resume-time rotation from recording a disabled lower
+		# panel as the desired detached state before the USB sync can enable it.
+		requested_mode="detached"
 	fi
 
 	wait_for_graphical_session_ready || return 1
@@ -641,17 +639,20 @@ apply_display_state()
 	connected_bottom="$(jq -r --arg name "${BOTTOM_OUTPUT}" '[.outputs[] | select(.name == $name and .connected == true)] | length > 0' <<< "${config_json}")"
 	enabled_top="$(jq -r --arg name "${TOP_OUTPUT}" '[.outputs[] | select(.name == $name and .connected == true and .enabled == true)] | length > 0' <<< "${config_json}")"
 	enabled_bottom="$(jq -r --arg name "${BOTTOM_OUTPUT}" '[.outputs[] | select(.name == $name and .connected == true and .enabled == true)] | length > 0' <<< "${config_json}")"
+	if [[ "${requested_mode}" == "detached" ]]; then
+		target_bottom_enabled="${connected_bottom}"
+	else
+		target_bottom_enabled=false
+	fi
 	primary_preference="$(read_primary_display_preference)"
 	current_primary="$(primary_output_from_json <<< "${config_json}")"
 	target_primary="${TOP_OUTPUT}"
-	if [[ "${state_mode}" == detached && "${primary_preference}" == lower ]]; then
-		if [[ "${requested_mode}" == detached && "${connected_bottom}" == true ]] ||
-			[[ "${requested_mode}" == rotate && "${enabled_bottom}" == true ]]
-		then
-			target_primary="${BOTTOM_OUTPUT}"
-		fi
+	if [[ "${requested_mode}" == detached && "${primary_preference}" == lower &&
+		"${connected_bottom}" == true ]]
+	then
+		target_primary="${BOTTOM_OUTPUT}"
 	fi
-	state_label="${state_mode}:${orientation}:${enabled_top}:${enabled_bottom}:${primary_preference}"
+	state_label="${requested_mode}:${orientation}:${enabled_top}:${target_bottom_enabled}:${primary_preference}"
 	saved_state="$(cat "${STATE_FILE}" 2>/dev/null || true)"
 	if [[ "${requested_mode}" != "docked" && "${saved_state}" == "${state_label}" &&
 		"${current_primary}" == "${target_primary}" ]]
@@ -680,12 +681,10 @@ apply_display_state()
 		if [[ "${enabled_bottom}" == "true" ]]; then
 			args+=("output.${BOTTOM_OUTPUT}.rotation.none" "output.${BOTTOM_OUTPUT}.position.0,1125" "output.${BOTTOM_OUTPUT}.disable")
 		fi
-	elif [[ "${requested_mode}" == "detached" ]]; then
+	else
 		if [[ "${connected_bottom}" == "true" ]]; then
 			args+=("output.${BOTTOM_OUTPUT}.enable" "output.${BOTTOM_OUTPUT}.rotation.${BOTTOM_ROTATION}" "output.${BOTTOM_OUTPUT}.position.${BOTTOM_POSITION}")
 		fi
-	elif [[ "${enabled_bottom}" == "true" ]]; then
-		args+=("output.${BOTTOM_OUTPUT}.rotation.${BOTTOM_ROTATION}" "output.${BOTTOM_OUTPUT}.position.${BOTTOM_POSITION}")
 	fi
 	if [[ "${target_primary}" == "${TOP_OUTPUT}" && "${enabled_top}" == true ]] ||
 		[[ "${target_primary}" == "${BOTTOM_OUTPUT}" && ("${connected_bottom}" == true || "${enabled_bottom}" == true) ]]
@@ -702,10 +701,8 @@ apply_display_state()
 		if run_kscreen "${args[@]}" >/dev/null 2>&1; then
 			if [[ "${requested_mode}" == "docked" ]]; then
 				printf '%s\n' "docked:normal:${enabled_top}:false:${primary_preference}" > "${STATE_FILE}"
-			elif [[ "${requested_mode}" == "detached" ]]; then
-				printf '%s\n' "detached:${orientation}:${enabled_top}:${connected_bottom}:${primary_preference}" > "${STATE_FILE}"
 			else
-				printf '%s\n' "detached:${orientation}:${enabled_top}:${enabled_bottom}:${primary_preference}" > "${STATE_FILE}"
+				printf '%s\n' "detached:${orientation}:${enabled_top}:${connected_bottom}:${primary_preference}" > "${STATE_FILE}"
 			fi
 			log "SUCCESS: mode=${requested_mode}, orientation=${orientation}, top=${enabled_top}, bottom=${connected_bottom}, primary=${target_primary}, preference=${primary_preference}, user=${SESSION_USER}, attempt=${attempt}"
 			if [[ "${requested_mode}" != "docked" ]]; then
@@ -925,21 +922,28 @@ show_status()
 	fi
 }
 
-case "${ACTION}" in
-	monitor)
-		sync_state true
-		monitor_orientations
-		;;
-	sync) sync_state false ;;
-	apply)
-		orientation_is_valid "${REQUESTED_ORIENTATION}" || { usage; exit 2; }
-		apply_display_state rotate "${REQUESTED_ORIENTATION}"
-		;;
-	fit-icons)
-		[[ -z "${REQUESTED_ORIENTATION}" ]] || orientation_is_valid "${REQUESTED_ORIENTATION}" || { usage; exit 2; }
-		fit_icons_now "${REQUESTED_ORIENTATION}"
-		;;
-	uninstall-touch-restore) restore_touch_for_uninstall ;;
-	status) show_status ;;
-	*) usage; exit 2 ;;
-esac
+main()
+{
+	case "${ACTION}" in
+		monitor)
+			sync_state true
+			monitor_orientations
+			;;
+		sync) sync_state false ;;
+		apply)
+			orientation_is_valid "${REQUESTED_ORIENTATION}" || { usage; exit 2; }
+			apply_display_state rotate "${REQUESTED_ORIENTATION}"
+			;;
+		fit-icons)
+			[[ -z "${REQUESTED_ORIENTATION}" ]] || orientation_is_valid "${REQUESTED_ORIENTATION}" || { usage; exit 2; }
+			fit_icons_now "${REQUESTED_ORIENTATION}"
+			;;
+		uninstall-touch-restore) restore_touch_for_uninstall ;;
+		status) show_status ;;
+		*) usage; exit 2 ;;
+	esac
+}
+
+if [[ "${ZENBOOK_DUO_DISPLAY_CONTROL_SOURCE_ONLY:-false}" != true ]]; then
+	main "$@"
+fi

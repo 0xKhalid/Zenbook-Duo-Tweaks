@@ -4,7 +4,7 @@
         "Id": "zenbookduospanbothscreens",
         "Name": "Span Both Screens",
         "Description": "Span maximized windows across both Zenbook Duo displays",
-        "Version": "2.11",
+        "Version": "2.12",
         "License": "MIT",
         "Authors": [
             {

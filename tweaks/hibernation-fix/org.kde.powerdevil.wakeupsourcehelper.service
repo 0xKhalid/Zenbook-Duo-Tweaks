@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.kde.powerdevil.wakeupsourcehelper
+Exec=/usr/local/libexec/ux8407aa-powerdevil-wakeupsourcehelper
+User=root

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LID_STATE_FILE="${LID_STATE_FILE:-/proc/acpi/button/lid/LID/state}"
+POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-1}"
+DEBOUNCE_SECONDS="${DEBOUNCE_SECONDS:-2}"
+
+if [[ ! -r "$LID_STATE_FILE" ]]; then
+  echo "Cannot read lid state file: $LID_STATE_FILE" >&2
+  exit 1
+fi
+
+read_lid_state() {
+  awk '{ print $2 }' "$LID_STATE_FILE" 2>/dev/null || true
+}
+
+log_info() {
+  systemd-cat -t lid-hibernate-watch -p info printf '%s\n' "$1"
+}
+
+last_hibernate_attempt=0
+
+while true; do
+  current_state="$(read_lid_state)"
+
+  if [[ "$current_state" == "closed" ]]; then
+    now="$(date +%s)"
+
+    if (( now - last_hibernate_attempt < 15 )); then
+      sleep "$POLL_INTERVAL_SECONDS"
+      continue
+    fi
+
+    sleep "$DEBOUNCE_SECONDS"
+    current_state="$(read_lid_state)"
+
+    if [[ "$current_state" == "closed" ]]; then
+      last_hibernate_attempt="$(date +%s)"
+      log_info "Lid closed; locking sessions and requesting hibernate"
+      loginctl lock-sessions || true
+      systemctl --no-block --ignore-inhibitors hibernate
+      sleep 10
+    fi
+  fi
+
+  sleep "$POLL_INTERVAL_SECONDS"
+done

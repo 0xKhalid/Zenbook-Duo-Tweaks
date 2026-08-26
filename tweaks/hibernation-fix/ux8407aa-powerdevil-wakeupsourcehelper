@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LID_STATE_FILE="${HIBERNATION_FIX_LID_STATE_FILE:-/proc/acpi/button/lid/LID/state}"
+ORIGINAL_HELPER="${HIBERNATION_FIX_ORIGINAL_WAKEUP_HELPER:-/usr/libexec/kf6/kauth/wakeupsourcehelper}"
+LOGGER_BIN="${HIBERNATION_FIX_LOGGER_BIN:-logger}"
+LID_POLL_SECONDS="${HIBERNATION_FIX_LID_POLL_SECONDS:-0.05}"
+
+log_message()
+{
+	local message="$1"
+
+	printf '%s\n' "${message}" >&2
+	if [[ -z "${INVOCATION_ID:-}" && -z "${JOURNAL_STREAM:-}" ]] &&
+		command -v "${LOGGER_BIN}" >/dev/null 2>&1
+	then
+		"${LOGGER_BIN}" -t ux8407aa-powerdevil-wakeupsourcehelper -- "${message}" 2>/dev/null || true
+	fi
+}
+
+read_lid_state()
+{
+	local line
+
+	[[ -r "${LID_STATE_FILE}" ]] || return 1
+	IFS= read -r line < "${LID_STATE_FILE}" || return 1
+	line="${line,,}"
+	if [[ "${line}" =~ ^[[:space:]]*state:[[:space:]]*(open|closed)[[:space:]]*$ ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+	return 1
+}
+
+process_is_original_helper()
+{
+	local helper_pid="$1"
+	local original_real="$2"
+	local active_real
+
+	[[ "${helper_pid}" =~ ^[0-9]+$ && -L "/proc/${helper_pid}/exe" ]] || return 1
+	active_real="$(readlink -f -- "/proc/${helper_pid}/exe" 2>/dev/null || true)"
+	[[ -n "${active_real}" && "${active_real}" == "${original_real}" ]]
+}
+
+guard_delegated_helper()
+{
+	local helper_pid="$1"
+	local original_real="$2"
+	local attempt lid_state
+
+	# The child can run just before the parent execs KDE's ELF helper. Wait up to
+	# one second for that exact executable, and never signal a reused PID.
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		kill -0 "${helper_pid}" 2>/dev/null || return 0
+		process_is_original_helper "${helper_pid}" "${original_real}" && break
+		sleep 0.01
+	done
+	process_is_original_helper "${helper_pid}" "${original_real}" || return 0
+
+	while process_is_original_helper "${helper_pid}" "${original_real}"; do
+		lid_state="$(read_lid_state || true)"
+		if [[ "${lid_state}" != open ]]; then
+			log_message "Lid is ${lid_state:-unavailable} while KDE's wakeup-count helper is still active; terminating the stale helper so the lid decision is re-evaluated."
+			kill -TERM "${helper_pid}" 2>/dev/null || return 0
+			for ((attempt = 0; attempt < 20; attempt++)); do
+				process_is_original_helper "${helper_pid}" "${original_real}" || return 0
+				sleep 0.01
+			done
+			process_is_original_helper "${helper_pid}" "${original_real}" &&
+				kill -KILL "${helper_pid}" 2>/dev/null || true
+			return 0
+		fi
+		sleep "${LID_POLL_SECONDS}"
+	done
+}
+
+stop_delegated_children()
+{
+	local original_pid="$1"
+	local guard_pid="$2"
+
+	kill -TERM "${guard_pid}" "${original_pid}" 2>/dev/null || true
+	wait "${guard_pid}" "${original_pid}" 2>/dev/null || true
+}
+
+delegate_to_original()
+{
+	local original_real self_real original_pid guard_pid helper_status=0
+
+	[[ -f "${ORIGINAL_HELPER}" && -x "${ORIGINAL_HELPER}" ]] || {
+		log_message "ERROR: Original KDE wakeup-count helper is unavailable: ${ORIGINAL_HELPER}"
+		return 1
+	}
+	original_real="$(readlink -f -- "${ORIGINAL_HELPER}" 2>/dev/null || true)"
+	self_real="$(readlink -f -- "$0" 2>/dev/null || true)"
+	[[ -n "${original_real}" && "${original_real}" != "${self_real}" ]] || {
+		log_message "ERROR: Refusing recursive KDE wakeup-count helper delegation."
+		return 1
+	}
+
+	log_message "Lid is open; delegating to KDE's original wakeup-count helper."
+	"${ORIGINAL_HELPER}" "$@" &
+	original_pid=$!
+	guard_delegated_helper "${original_pid}" "${original_real}" &
+	guard_pid=$!
+	trap 'stop_delegated_children "${original_pid}" "${guard_pid}"; exit 143' INT TERM
+	wait "${original_pid}" || helper_status=$?
+	trap - INT TERM
+	# Let the guard observe the exited helper after its current short poll. Killing
+	# the guard here could orphan that poll's sleep process for a few milliseconds.
+	wait "${guard_pid}" 2>/dev/null || true
+	return "${helper_status}"
+}
+
+lid_state="$(read_lid_state || true)"
+case "${lid_state}" in
+	open)
+		delegate_to_original "$@"
+		;;
+	closed)
+		log_message "Lid is closed; bypassing KDE's wakeup-count helper so hibernation is not rolled back by a pending platform event."
+		exit 1
+		;;
+	*)
+		log_message "ERROR: Lid state is unavailable or invalid; bypassing KDE's wakeup-count helper on this UX8407AA rather than arming a known-bad hibernation rollback path."
+		exit 1
+		;;
+esac

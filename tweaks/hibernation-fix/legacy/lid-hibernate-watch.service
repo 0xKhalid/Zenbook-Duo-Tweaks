@@ -1,0 +1,14 @@
+[Unit]
+Description=Hibernate when the laptop lid closes
+Documentation=man:systemctl(1) man:loginctl(1)
+After=systemd-logind.service
+Requires=systemd-logind.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/lid-hibernate-watch
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -6,7 +6,7 @@ set -euo pipefail
 #  by Khalid M AlAwadhi <khalid@remal.io>
 #================================================================
 
-VERSION="2.11"
+VERSION="2.12"
 AUTHOR="Khalid M AlAwadhi <khalid@remal.io>"
 PROJECT_URL="https://github.com/0xKhalid/Zenbook-Duo-Tweaks"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,7 +14,7 @@ TWEAKS_DIR="${REPO_DIR}/tweaks"
 BACKUP_DIR="/var/lib/zenbook-tweaks/backups"
 STATE_DIR="/var/lib/zenbook-tweaks/state"
 TESTED_OS="Fedora 44"
-TESTED_KERNEL="7.1.8-200.fc44.x86_64"
+TESTED_KERNEL="7.1.10-200.fc44.x86_64"
 TESTED_DESKTOP="KDE Plasma Wayland 6.7.4"
 TESTED_GPU="Intel Panther Lake Graphics [8086:b090]"
 TESTED_DRIVER="xe"
@@ -669,8 +669,8 @@ do_install_interactive()
 			return
 		fi
 
-		# Backup existing destination file before overwriting
-		if [[ -f "$dest" ]]; then
+		# Backup only pre-existing content, not an identical managed install.
+		if [[ -f "$dest" ]] && ! cmp -s "$src_path" "$dest"; then
 			local backup_path="${BACKUP_DIR}/${name}${dest}"
 			if [[ ! -f "$backup_path" ]]; then
 				mkdir -p "$(dirname "$backup_path")"
@@ -684,7 +684,13 @@ do_install_interactive()
 	done
 
 	if type -t tweak_post_install &>/dev/null; then
-		tweak_post_install >/dev/tty
+		if ! tweak_post_install >/dev/tty; then
+			error "Post-install failed for ${TWEAK_NAME}" >/dev/tty
+			echo ""                                     >/dev/tty
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}" >/dev/tty
+			read -rsn1 </dev/tty
+			return
+		fi
 	fi
 
 	{
@@ -762,7 +768,13 @@ do_uninstall_interactive()
 	fi
 
 	if type -t tweak_post_uninstall &>/dev/null; then
-		tweak_post_uninstall >/dev/tty
+		if ! tweak_post_uninstall >/dev/tty; then
+			error "Post-uninstall cleanup failed for ${TWEAK_NAME}" >/dev/tty
+			echo ""                                             >/dev/tty
+			echo -e "  ${C_DIM}Press any key to return...${C_RESET}" >/dev/tty
+			read -rsn1 </dev/tty
+			return
+		fi
 	fi
 
 	{

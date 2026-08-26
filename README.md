@@ -9,7 +9,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 44 |
 | **Desktop** | KDE Plasma Wayland 6.7.4 |
-| **Kernel** | 7.1.8-200.fc44.x86_64 |
+| **Kernel** | 7.1.10-200.fc44.x86_64 |
 | **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
 | **Driver** | `xe` |
 
@@ -17,6 +17,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 
 | Tweak | Description |
 |-------|-------------|
+| `hibernation-fix` | Make taskbar and lid-close hibernation work on the first attempt |
 | `duo-display-control` | Automatic dual-screen control and rotation |
 | `intel-display-stability` | Prevent Intel screen corruption and freezes |
 | `span-both-screens` | Span maximized windows across both screens |
@@ -68,6 +69,15 @@ Zenbook-Duo-Tweaks/
 │   │   └── 90-zenbook-duo-display-control.conf
 │   ├── intel-display-stability/
 │   │   └── tweak.conf
+│   ├── hibernation-fix/
+│   │   ├── tweak.conf
+│   │   ├── ux8407aa-hibernate-bluetooth
+│   │   ├── ux8407aa-powerdevil-wakeupsourcehelper
+│   │   ├── 10-ux8407aa-hibernate-bluetooth.conf
+│   │   ├── org.kde.powerdevil.wakeupsourcehelper.service
+│   │   └── legacy/
+│   │       ├── lid-hibernate-watch
+│   │       └── lid-hibernate-watch.service
 │   ├── span-both-screens/
 │   │   ├── tweak.conf
 │   │   ├── metadata.json
@@ -103,6 +113,16 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.12 - Reliable first-attempt hibernation:
+- Added the reversible `hibernation-fix` tweak for the verified UX8407AA Intel Bluetooth PCIe controller and physical ASUS USB keyboard.
+- Hibernation now temporarily disconnects only PCI `0000:00:14.7` (`8086:e476`, `btintel_pcie`) and attached USB keyboard `0b05:1cd7`, then restores both after resume or rollback.
+- Lid-close hibernation bypasses KDE PowerDevil's problematic `wakeup_count` helper only while the physical lid is closed; open-lid behavior delegates unchanged, with a lid guard preventing KDE's cached helper process from bypassing a later closed-lid decision.
+- Installation performs a guarded recovery test and archives/removes the old polling lid watcher; Uninstall verifies the complete state and both backup checksums before restoring the exact prior files and service state.
+- Added TUI status, device-recovery, and manual-restore actions; validated hardware checks, failure recovery, watcher lifecycle, D-Bus routing/reuse, reinstall, and rollback with local mocked regression tests.
+- Fixed the manager to avoid backing up an identical managed install and to report failed post-install or post-uninstall hooks instead of claiming success.
+- Live validation confirmed one successful taskbar hibernation and one successful attached-keyboard lid hibernation with no Bluetooth `-16`, wake-event rollback, or duplicate request.
+- Updated Tested On metadata for Fedora 44, kernel `7.1.10-200.fc44.x86_64`, KDE Plasma Wayland 6.7.4, Intel Panther Lake Graphics `[8086:b090]`, and the `xe` driver.
 
 ### v2.11 - Reliable post-resume lower-screen reconciliation:
 - Fixed a resume race where an orientation event could record connected `eDP-2` as disabled before the physical-keyboard sync enabled it.

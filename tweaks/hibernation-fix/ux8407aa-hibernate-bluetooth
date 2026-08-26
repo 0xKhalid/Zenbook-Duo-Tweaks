@@ -1,0 +1,718 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-status}"
+PCI_ADDRESS="${HIBERNATION_FIX_PCI_ADDRESS:-0000:00:14.7}"
+EXPECTED_VENDOR="${HIBERNATION_FIX_EXPECTED_VENDOR:-0x8086}"
+EXPECTED_DEVICE="${HIBERNATION_FIX_EXPECTED_DEVICE:-0xe476}"
+EXPECTED_DRIVER="${HIBERNATION_FIX_EXPECTED_DRIVER:-btintel_pcie}"
+EXPECTED_HCI="${HIBERNATION_FIX_EXPECTED_HCI:-hci0}"
+KEYBOARD_VENDOR="${HIBERNATION_FIX_KEYBOARD_VENDOR:-0b05}"
+KEYBOARD_PRODUCT="${HIBERNATION_FIX_KEYBOARD_PRODUCT:-1cd7}"
+KEYBOARD_SETTLE_SECONDS="${HIBERNATION_FIX_KEYBOARD_SETTLE_SECONDS:-2}"
+SYSFS_ROOT="${HIBERNATION_FIX_SYSFS_ROOT:-/sys}"
+MARKER_FILE="${HIBERNATION_FIX_MARKER_FILE:-/run/ux8407aa-hibernate-bluetooth.prepared}"
+LOCK_FILE="${HIBERNATION_FIX_LOCK_FILE:-/run/lock/ux8407aa-hibernate-bluetooth.lock}"
+WAIT_ATTEMPTS="${HIBERNATION_FIX_WAIT_ATTEMPTS:-50}"
+WAIT_DELAY_SECONDS="${HIBERNATION_FIX_WAIT_DELAY_SECONDS:-0.2}"
+SYSTEMCTL_BIN="${HIBERNATION_FIX_SYSTEMCTL_BIN:-systemctl}"
+MODPROBE_BIN="${HIBERNATION_FIX_MODPROBE_BIN:-modprobe}"
+BLUETOOTHCTL_BIN="${HIBERNATION_FIX_BLUETOOTHCTL_BIN:-bluetoothctl}"
+LOGGER_BIN="${HIBERNATION_FIX_LOGGER_BIN:-logger}"
+HIBERNATE_DROPIN="${HIBERNATION_FIX_DROPIN:-/etc/systemd/system/systemd-hibernate.service.d/10-ux8407aa-hibernate-bluetooth.conf}"
+LEGACY_WATCHER_UNIT="${HIBERNATION_FIX_LEGACY_UNIT:-/etc/systemd/system/lid-hibernate-watch.service}"
+LEGACY_WATCHER_SCRIPT="${HIBERNATION_FIX_LEGACY_SCRIPT:-/usr/local/libexec/lid-hibernate-watch}"
+
+DEVICE_PATH="${SYSFS_ROOT}/bus/pci/devices/${PCI_ADDRESS}"
+DRIVER_PATH="${SYSFS_ROOT}/bus/pci/drivers/${EXPECTED_DRIVER}"
+USB_DRIVER_PATH="${SYSFS_ROOT}/bus/usb/drivers/usb"
+
+log_message()
+{
+	local message="$1"
+	printf '%s\n' "${message}"
+	if [[ -z "${INVOCATION_ID:-}" ]] && command -v "${LOGGER_BIN}" >/dev/null 2>&1; then
+		"${LOGGER_BIN}" -t ux8407aa-hibernate-bluetooth -- "${message}" 2>/dev/null || true
+	fi
+}
+
+error_message()
+{
+	local message="$1"
+	printf 'ERROR: %s\n' "${message}" >&2
+	if [[ -z "${INVOCATION_ID:-}" ]] && command -v "${LOGGER_BIN}" >/dev/null 2>&1; then
+		"${LOGGER_BIN}" -t ux8407aa-hibernate-bluetooth -- "ERROR: ${message}" 2>/dev/null || true
+	fi
+}
+
+require_root()
+{
+	if [[ "${HIBERNATION_FIX_SKIP_ROOT_CHECK:-false}" != true && "${EUID}" -ne 0 ]]; then
+		error_message "This action requires root privileges."
+		return 1
+	fi
+}
+
+read_attribute()
+{
+	local path="$1"
+	local value
+
+	[[ -r "${path}" ]] || return 1
+	read -r value < "${path}" || return 1
+	printf '%s\n' "${value,,}"
+}
+
+controller_identity_valid()
+{
+	local vendor device
+
+	[[ -d "${DEVICE_PATH}" ]] || return 1
+	vendor="$(read_attribute "${DEVICE_PATH}/vendor")" || return 1
+	device="$(read_attribute "${DEVICE_PATH}/device")" || return 1
+	[[ "${vendor}" == "${EXPECTED_VENDOR,,}" && "${device}" == "${EXPECTED_DEVICE,,}" ]]
+}
+
+current_driver()
+{
+	local target
+
+	[[ -L "${DEVICE_PATH}/driver" ]] || return 0
+	target="$(readlink -f "${DEVICE_PATH}/driver" 2>/dev/null || true)"
+	[[ -n "${target}" ]] && basename "${target}"
+}
+
+find_controller_hci()
+{
+	local path
+	local paths=()
+
+	shopt -s nullglob
+	paths=("${DEVICE_PATH}"/bluetooth/hci*)
+	shopt -u nullglob
+	for path in "${paths[@]}"; do
+		[[ -d "${path}" ]] || continue
+		basename "${path}"
+		return 0
+	done
+	return 1
+}
+
+physical_keyboard_paths()
+{
+	local path vendor product
+
+	for path in "${SYSFS_ROOT}"/bus/usb/devices/*; do
+		[[ -r "${path}/idVendor" && -r "${path}/idProduct" ]] || continue
+		vendor="$(read_attribute "${path}/idVendor")" || continue
+		product="$(read_attribute "${path}/idProduct")" || continue
+		if [[ "${vendor}" == "${KEYBOARD_VENDOR,,}" && "${product}" == "${KEYBOARD_PRODUCT,,}" ]]; then
+			basename "${path}"
+		fi
+	done
+}
+
+keyboard_identity_valid()
+{
+	local sysname="$1"
+	local path vendor product
+
+	[[ "${sysname}" =~ ^[A-Za-z0-9._:-]+$ ]] || return 1
+	path="${SYSFS_ROOT}/bus/usb/devices/${sysname}"
+	[[ -d "${path}" ]] || return 1
+	vendor="$(read_attribute "${path}/idVendor")" || return 1
+	product="$(read_attribute "${path}/idProduct")" || return 1
+	[[ "${vendor}" == "${KEYBOARD_VENDOR,,}" && "${product}" == "${KEYBOARD_PRODUCT,,}" ]]
+}
+
+keyboard_wakeup_state()
+{
+	local sysname="$1"
+	local state
+
+	keyboard_identity_valid "${sysname}" || return 1
+	state="$(read_attribute "${SYSFS_ROOT}/bus/usb/devices/${sysname}/power/wakeup")" || return 1
+	case "${state}" in
+		enabled|disabled) printf '%s\n' "${state}" ;;
+		*) return 1 ;;
+	esac
+}
+
+keyboard_driver()
+{
+	local sysname="$1"
+	local target
+
+	keyboard_identity_valid "${sysname}" || return 1
+	[[ -L "${SYSFS_ROOT}/bus/usb/devices/${sysname}/driver" ]] || return 0
+	target="$(readlink -f "${SYSFS_ROOT}/bus/usb/devices/${sysname}/driver" 2>/dev/null || true)"
+	[[ -n "${target}" ]] && basename "${target}"
+}
+
+keyboard_interfaces_bound()
+{
+	local sysname="$1"
+	local path
+
+	for path in "${SYSFS_ROOT}/bus/usb/devices/${sysname}":*/driver; do
+		[[ -L "${path}" ]] && return 0
+	done
+	return 1
+}
+
+keyboard_hid_interface_ready()
+{
+	local sysname="$1"
+	local path target
+
+	for path in "${SYSFS_ROOT}/bus/usb/devices/${sysname}":*/driver; do
+		[[ -L "${path}" ]] || continue
+		target="$(readlink -f "${path}" 2>/dev/null || true)"
+		[[ -n "${target}" && "$(basename "${target}")" == usbhid ]] && return 0
+	done
+	return 1
+}
+
+set_keyboard_wakeup()
+{
+	local sysname="$1"
+	local wanted="$2"
+	local wake_path="${SYSFS_ROOT}/bus/usb/devices/${sysname}/power/wakeup"
+
+	keyboard_identity_valid "${sysname}" || return 1
+	[[ "${wanted}" == enabled || "${wanted}" == disabled ]] || return 1
+	[[ -w "${wake_path}" ]] || return 1
+	printf '%s\n' "${wanted}" > "${wake_path}"
+	[[ "$(keyboard_wakeup_state "${sysname}")" == "${wanted}" ]]
+}
+
+bluez_active()
+{
+	"${SYSTEMCTL_BIN}" is-active --quiet bluetooth.service 2>/dev/null
+}
+
+adapter_power_state()
+{
+	local state
+
+	state="$("${BLUETOOTHCTL_BIN}" show 2>/dev/null |
+		awk -F: '/^[[:space:]]*Powered:/ { gsub(/[[:space:]]/, "", $2); print tolower($2); exit }')"
+	case "${state}" in
+		yes|no) printf '%s\n' "${state}" ;;
+		*) printf '%s\n' unknown ;;
+	esac
+}
+
+marker_value()
+{
+	local key="$1"
+	awk -F= -v key="${key}" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "${MARKER_FILE}" 2>/dev/null
+}
+
+marker_is_valid()
+{
+	[[ -f "${MARKER_FILE}" ]] || return 1
+	[[ "$(marker_value version)" == 2 &&
+		"$(marker_value pci)" == "${PCI_ADDRESS}" &&
+		"$(marker_value driver)" == "${EXPECTED_DRIVER}" ]]
+}
+
+write_marker()
+{
+	local hci="$1"
+	local bluez_was_active="$2"
+	local powered="$3"
+	local keyboard_sysname="$4"
+	local keyboard_wakeup="$5"
+	local keyboard_bound="$6"
+	local marker_dir marker_tmp
+
+	marker_dir="$(dirname "${MARKER_FILE}")"
+	mkdir -p "${marker_dir}"
+	marker_tmp="${MARKER_FILE}.tmp.$$"
+	umask 077
+	{
+		printf 'version=2\n'
+		printf 'pci=%s\n' "${PCI_ADDRESS}"
+		printf 'driver=%s\n' "${EXPECTED_DRIVER}"
+		printf 'hci=%s\n' "${hci}"
+		printf 'bluez_active=%s\n' "${bluez_was_active}"
+		printf 'powered=%s\n' "${powered}"
+		printf 'keyboard_sysname=%s\n' "${keyboard_sysname}"
+		printf 'keyboard_wakeup=%s\n' "${keyboard_wakeup}"
+		printf 'keyboard_bound=%s\n' "${keyboard_bound}"
+	} > "${marker_tmp}"
+	mv -f "${marker_tmp}" "${MARKER_FILE}"
+}
+
+acquire_lock()
+{
+	mkdir -p "$(dirname "${LOCK_FILE}")"
+	exec 9>"${LOCK_FILE}"
+	flock -w 15 9
+}
+
+wait_for_driver()
+{
+	local wanted="$1"
+	local attempt driver
+
+	for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+		driver="$(current_driver)"
+		if [[ "${driver}" == "${wanted}" ]]; then
+			return 0
+		fi
+		sleep "${WAIT_DELAY_SECONDS}"
+	done
+	return 1
+}
+
+wait_for_unbound_controller()
+{
+	local hci="$1"
+	local attempt
+
+	for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+		if [[ -z "$(current_driver)" ]] &&
+			[[ ! -d "${DEVICE_PATH}/bluetooth/${hci}" ]] &&
+			[[ ! -e "${SYSFS_ROOT}/class/bluetooth/${hci}" ]]
+		then
+			return 0
+		fi
+		sleep "${WAIT_DELAY_SECONDS}"
+	done
+	return 1
+}
+
+wait_for_hci()
+{
+	local wanted="$1"
+	local attempt found
+
+	for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+		found="$(find_controller_hci || true)"
+		if [[ "${found}" == "${wanted}" && -e "${SYSFS_ROOT}/class/bluetooth/${wanted}" ]]; then
+			return 0
+		fi
+		sleep "${WAIT_DELAY_SECONDS}"
+	done
+	return 1
+}
+
+wait_for_keyboard_unbound()
+{
+	local sysname="$1"
+	local attempt driver
+
+	for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+		driver="$(keyboard_driver "${sysname}" || true)"
+		if [[ -z "${driver}" ]] && ! keyboard_interfaces_bound "${sysname}"; then
+			return 0
+		fi
+		sleep "${WAIT_DELAY_SECONDS}"
+	done
+	return 1
+}
+
+wait_for_keyboard_bound()
+{
+	local sysname="$1"
+	local attempt driver
+
+	for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+		driver="$(keyboard_driver "${sysname}" || true)"
+		if [[ "${driver}" == usb ]] && keyboard_hid_interface_ready "${sysname}"; then
+			return 0
+		fi
+		sleep "${WAIT_DELAY_SECONDS}"
+	done
+	return 1
+}
+
+wait_for_bluez()
+{
+	local wanted_power="$1"
+	local attempt state
+
+	for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+		if bluez_active; then
+			state="$(adapter_power_state)"
+			if [[ "${wanted_power}" == unknown || "${state}" == "${wanted_power}" ]]; then
+				return 0
+			fi
+		fi
+		sleep "${WAIT_DELAY_SECONDS}"
+	done
+	return 1
+}
+
+write_unbind()
+{
+	printf '%s\n' "${PCI_ADDRESS}" > "${DRIVER_PATH}/unbind"
+}
+
+write_bind()
+{
+	printf '%s\n' "${PCI_ADDRESS}" > "${DRIVER_PATH}/bind"
+}
+
+write_keyboard_unbind()
+{
+	local sysname="$1"
+	printf '%s\n' "${sysname}" > "${USB_DRIVER_PATH}/unbind"
+}
+
+write_keyboard_bind()
+{
+	local sysname="$1"
+	printf '%s\n' "${sysname}" > "${USB_DRIVER_PATH}/bind"
+}
+
+restore_physical_keyboard()
+{
+	local marker_sysname marker_wakeup marker_bound current_sysname driver attempt
+	local keyboard_paths=()
+
+	marker_sysname="$(marker_value keyboard_sysname)"
+	marker_wakeup="$(marker_value keyboard_wakeup)"
+	marker_bound="$(marker_value keyboard_bound)"
+	[[ -n "${marker_sysname}" && -n "${marker_wakeup}" && -n "${marker_bound}" ]] || {
+		error_message "Preparation marker is missing physical-keyboard state."
+		return 1
+	}
+	[[ "${marker_sysname}" != none ]] || return 0
+	[[ "${marker_wakeup}" == enabled || "${marker_wakeup}" == disabled ]] || {
+		error_message "Preparation marker has an invalid keyboard wake state."
+		return 1
+	}
+	[[ "${marker_bound}" == true ]] || {
+		error_message "Preparation marker has an invalid keyboard binding state."
+		return 1
+	}
+
+	current_sysname="${marker_sysname}"
+	if ! keyboard_identity_valid "${current_sysname}"; then
+		for attempt in $(seq 1 "${WAIT_ATTEMPTS}"); do
+			mapfile -t keyboard_paths < <(physical_keyboard_paths)
+			if [[ "${#keyboard_paths[@]}" -eq 1 ]]; then
+				current_sysname="${keyboard_paths[0]}"
+				break
+			fi
+			if [[ "${#keyboard_paths[@]}" -gt 1 ]]; then
+				error_message "Multiple matching physical keyboards found; refusing physical-keyboard restoration."
+				return 1
+			fi
+			sleep "${WAIT_DELAY_SECONDS}"
+		done
+		if ! keyboard_identity_valid "${current_sysname}"; then
+			log_message "Physical keyboard remained detached throughout the recovery window."
+			return 0
+		fi
+	fi
+
+	driver="$(keyboard_driver "${current_sysname}" || true)"
+	if [[ -n "${driver}" && "${driver}" != usb ]]; then
+		error_message "Physical keyboard is bound to unexpected driver ${driver}; refusing to replace it."
+		return 1
+	fi
+	if [[ -z "${driver}" ]]; then
+		[[ -w "${USB_DRIVER_PATH}/bind" ]] || {
+			error_message "USB bind interface is unavailable for physical-keyboard recovery."
+			return 1
+		}
+		write_keyboard_bind "${current_sysname}" || {
+			error_message "Could not rebind the physical ASUS keyboard."
+			return 1
+		}
+	fi
+	wait_for_keyboard_bound "${current_sysname}" || {
+		error_message "Physical ASUS keyboard input interfaces did not return after bind."
+		return 1
+	}
+
+	if [[ "$(keyboard_wakeup_state "${current_sysname}" || true)" != "${marker_wakeup}" ]]; then
+		set_keyboard_wakeup "${current_sysname}" "${marker_wakeup}" || {
+			error_message "Could not restore ${current_sysname} wake setting to ${marker_wakeup}."
+			return 1
+		}
+	fi
+	log_message "Physical ASUS keyboard rebound; wake setting restored to ${marker_wakeup}."
+}
+
+restore_locked()
+{
+	local marker_hci marker_bluez marker_power driver keyboard_restored=true
+
+	[[ -f "${MARKER_FILE}" ]] || {
+		log_message "Bluetooth restore not needed; no preparation marker exists."
+		return 0
+	}
+	marker_is_valid || {
+		error_message "Preparation marker does not match this controller; refusing automatic bind."
+		return 1
+	}
+	if ! restore_physical_keyboard; then
+		keyboard_restored=false
+	fi
+	controller_identity_valid || {
+		error_message "Intel Bluetooth controller identity no longer matches ${PCI_ADDRESS} ${EXPECTED_VENDOR}:${EXPECTED_DEVICE}."
+		return 1
+	}
+
+	marker_hci="$(marker_value hci)"
+	marker_bluez="$(marker_value bluez_active)"
+	marker_power="$(marker_value powered)"
+	driver="$(current_driver)"
+	if [[ -n "${driver}" && "${driver}" != "${EXPECTED_DRIVER}" ]]; then
+		error_message "Controller is bound to unexpected driver ${driver}; refusing to replace it."
+		return 1
+	fi
+	if [[ -z "${driver}" ]]; then
+		"${MODPROBE_BIN}" "${EXPECTED_DRIVER}"
+		[[ -w "${DRIVER_PATH}/bind" ]] || {
+			error_message "Driver bind interface is unavailable after loading ${EXPECTED_DRIVER}."
+			return 1
+		}
+		write_bind
+	fi
+	wait_for_driver "${EXPECTED_DRIVER}" || {
+		error_message "Controller did not bind to ${EXPECTED_DRIVER}."
+		return 1
+	}
+	wait_for_hci "${marker_hci}" || {
+		error_message "${marker_hci} did not return under ${PCI_ADDRESS}."
+		return 1
+	}
+
+	if [[ "${marker_bluez}" == true ]]; then
+		bluez_active || "${SYSTEMCTL_BIN}" start bluetooth.service
+		if [[ "${marker_power}" == no ]]; then
+			"${BLUETOOTHCTL_BIN}" power off >/dev/null 2>&1 || true
+		fi
+		wait_for_bluez "${marker_power}" || {
+			error_message "BlueZ did not return to its previous powered state (${marker_power})."
+			return 1
+		}
+	fi
+	if [[ "${keyboard_restored}" != true ]]; then
+		error_message "Bluetooth recovered, but the physical keyboard did not."
+		return 1
+	fi
+
+	rm -f -- "${MARKER_FILE}"
+	log_message "Bluetooth controller restored on ${PCI_ADDRESS} with ${marker_hci}."
+}
+
+prepare_controller()
+(
+	local driver hci bluez_was_active=false powered=unknown committed=false
+	local keyboard_sysname=none keyboard_wakeup=absent keyboard_bound=false keyboard_driver_name
+	local keyboard_paths=()
+
+	require_root
+	acquire_lock || {
+		error_message "Could not acquire the Bluetooth hibernation lock."
+		return 1
+	}
+
+	if [[ -f "${MARKER_FILE}" ]]; then
+		marker_is_valid || {
+			error_message "An unrecognized preparation marker exists at ${MARKER_FILE}."
+			return 1
+		}
+		if [[ -z "$(current_driver)" && -z "$(find_controller_hci || true)" ]]; then
+			if [[ "$(marker_value keyboard_sysname)" == none ]] ||
+				{ [[ -z "$(keyboard_driver "$(marker_value keyboard_sysname)" 2>/dev/null || true)" ]] &&
+				! keyboard_interfaces_bound "$(marker_value keyboard_sysname)"; }
+			then
+				log_message "Hibernation devices are already prepared."
+				return 0
+			fi
+		fi
+		restore_locked || return 1
+	fi
+
+	controller_identity_valid || {
+		error_message "Expected Intel Bluetooth controller ${PCI_ADDRESS} ${EXPECTED_VENDOR}:${EXPECTED_DEVICE} was not found."
+		return 1
+	}
+	driver="$(current_driver)"
+	[[ "${driver}" == "${EXPECTED_DRIVER}" ]] || {
+		error_message "Expected ${EXPECTED_DRIVER} on ${PCI_ADDRESS}; found ${driver:-no driver}."
+		return 1
+	}
+	hci="$(find_controller_hci || true)"
+	[[ "${hci}" == "${EXPECTED_HCI}" && -e "${SYSFS_ROOT}/class/bluetooth/${hci}" ]] || {
+		error_message "Expected controller-specific ${EXPECTED_HCI} is unavailable."
+		return 1
+	}
+	[[ -w "${DRIVER_PATH}/unbind" ]] || {
+		error_message "Driver unbind interface is unavailable."
+		return 1
+	}
+	if bluez_active; then
+		bluez_was_active=true
+		powered="$(adapter_power_state)"
+	fi
+	mapfile -t keyboard_paths < <(physical_keyboard_paths)
+	if [[ "${#keyboard_paths[@]}" -gt 1 ]]; then
+		error_message "Multiple matching physical keyboards found; refusing hibernation preparation."
+		return 1
+	fi
+	if [[ "${#keyboard_paths[@]}" -eq 1 ]]; then
+		keyboard_sysname="${keyboard_paths[0]}"
+		keyboard_wakeup="$(keyboard_wakeup_state "${keyboard_sysname}" || true)"
+		keyboard_driver_name="$(keyboard_driver "${keyboard_sysname}" || true)"
+		[[ "${keyboard_wakeup}" == enabled || "${keyboard_wakeup}" == disabled ]] || {
+			error_message "Physical keyboard wake setting is unavailable."
+			return 1
+		}
+		[[ "${keyboard_driver_name}" == usb ]] || {
+			error_message "Expected USB device driver on physical keyboard ${keyboard_sysname}; found ${keyboard_driver_name:-no driver}."
+			return 1
+		}
+		[[ "${keyboard_wakeup}" == disabled || -w "${SYSFS_ROOT}/bus/usb/devices/${keyboard_sysname}/power/wakeup" ]] || {
+			error_message "Physical keyboard wake setting cannot be changed safely."
+			return 1
+		}
+		[[ -w "${USB_DRIVER_PATH}/unbind" && -w "${USB_DRIVER_PATH}/bind" ]] || {
+			error_message "USB bind controls are unavailable for safe physical-keyboard recovery."
+			return 1
+		}
+		keyboard_bound=true
+	fi
+
+	write_marker "${hci}" "${bluez_was_active}" "${powered}" "${keyboard_sysname}" "${keyboard_wakeup}" "${keyboard_bound}"
+	trap 'if [[ "${committed}" != true && -f "${MARKER_FILE}" ]]; then restore_locked || true; fi' EXIT INT TERM
+	if [[ "${keyboard_sysname}" != none ]]; then
+		if [[ "${keyboard_wakeup}" != disabled ]]; then
+			set_keyboard_wakeup "${keyboard_sysname}" disabled || {
+				error_message "Could not disable wake for the physical ASUS keyboard."
+				return 1
+			}
+		fi
+		write_keyboard_unbind "${keyboard_sysname}" || {
+			error_message "Could not unbind the physical ASUS keyboard."
+			return 1
+		}
+		wait_for_keyboard_unbound "${keyboard_sysname}" || {
+			error_message "Physical ASUS keyboard input interfaces remained bound."
+			return 1
+		}
+		log_message "Physical ASUS keyboard disconnected temporarily for hibernation."
+		sleep "${KEYBOARD_SETTLE_SECONDS}"
+	fi
+	write_unbind
+	wait_for_unbound_controller "${hci}" || {
+		error_message "Controller or ${hci} did not disappear after unbind."
+		return 1
+	}
+	committed=true
+	log_message "Hibernation devices prepared; ${hci} is disconnected."
+)
+
+restore_controller()
+(
+	require_root
+	acquire_lock || {
+		error_message "Could not acquire the Bluetooth hibernation lock."
+		return 1
+	}
+	restore_locked
+)
+
+dropin_state()
+{
+	if [[ ! -f "${HIBERNATE_DROPIN}" ]]; then
+		printf '%s\n' missing
+	elif grep -qxF "ExecStartPre=/usr/local/bin/ux8407aa-hibernate-bluetooth prepare" "${HIBERNATE_DROPIN}" &&
+		grep -qxF "ExecStopPost=/usr/local/bin/ux8407aa-hibernate-bluetooth restore" "${HIBERNATE_DROPIN}"
+	then
+		printf '%s\n' installed
+	else
+		printf '%s\n' modified
+	fi
+}
+
+show_status()
+{
+	local driver hci powered marker_state watcher_state health=0
+	local keyboard_sysname keyboard_wakeup keyboard_driver_name
+	local keyboard_paths=()
+
+	if controller_identity_valid; then
+		printf 'Controller: %s %s:%s verified\n' "${PCI_ADDRESS}" "${EXPECTED_VENDOR}" "${EXPECTED_DEVICE}"
+	else
+		printf 'Controller: expected hardware missing or mismatched\n'
+		health=1
+	fi
+	driver="$(current_driver)"
+	printf 'Driver: %s\n' "${driver:-unbound}"
+	hci="$(find_controller_hci || true)"
+	printf 'Bluetooth adapter: %s\n' "${hci:-absent}"
+	if bluez_active; then
+		powered="$(adapter_power_state)"
+		printf 'BlueZ: active; powered=%s\n' "${powered}"
+	else
+		printf 'BlueZ: inactive\n'
+	fi
+	if [[ -f "${MARKER_FILE}" ]]; then
+		marker_is_valid && marker_state="prepared" || marker_state="unrecognized marker"
+	else
+		marker_state="not prepared"
+	fi
+	printf 'Hibernation state: %s\n' "${marker_state}"
+	mapfile -t keyboard_paths < <(physical_keyboard_paths)
+	if [[ "${#keyboard_paths[@]}" -eq 1 ]]; then
+		keyboard_sysname="${keyboard_paths[0]}"
+		keyboard_wakeup="$(keyboard_wakeup_state "${keyboard_sysname}" || true)"
+		keyboard_driver_name="$(keyboard_driver "${keyboard_sysname}" || true)"
+		printf 'Physical keyboard: %s; binding=%s; wake=%s\n' "${keyboard_sysname}" "${keyboard_driver_name:-unbound}" "${keyboard_wakeup:-unavailable}"
+	elif [[ "${#keyboard_paths[@]}" -eq 0 ]]; then
+		printf 'Physical keyboard: detached\n'
+	else
+		printf 'Physical keyboard: multiple matches (unsafe)\n'
+		health=1
+	fi
+	printf 'Hibernate hook: %s\n' "$(dropin_state)"
+	if "${SYSTEMCTL_BIN}" is-active --quiet lid-hibernate-watch.service 2>/dev/null; then
+		watcher_state=active
+	elif [[ -e "${LEGACY_WATCHER_UNIT}" || -e "${LEGACY_WATCHER_SCRIPT}" ]]; then
+		watcher_state=inactive
+	else
+		watcher_state=removed
+	fi
+	printf 'Legacy lid watcher: %s\n' "${watcher_state}"
+
+	if [[ -f "${MARKER_FILE}" ]]; then
+		[[ -z "${driver}" && -z "${hci}" ]] || health=1
+		if [[ "$(marker_value keyboard_sysname)" != none && "${#keyboard_paths[@]}" -eq 1 ]]; then
+			[[ "${keyboard_wakeup}" == disabled && -z "${keyboard_driver_name}" ]] || health=1
+		fi
+	else
+		[[ "${driver}" == "${EXPECTED_DRIVER}" && "${hci}" == "${EXPECTED_HCI}" ]] || health=1
+		if [[ "${#keyboard_paths[@]}" -eq 1 ]]; then
+			[[ "${keyboard_driver_name}" == usb ]] || health=1
+		fi
+	fi
+	return "${health}"
+}
+
+usage()
+{
+	echo "Usage: $0 <prepare|restore|status>"
+}
+
+main()
+{
+	case "${ACTION}" in
+		prepare) prepare_controller ;;
+		restore) restore_controller ;;
+		status) show_status ;;
+		*) usage; return 2 ;;
+	esac
+}
+
+if [[ "${HIBERNATION_FIX_SOURCE_ONLY:-false}" != true ]]; then
+	main "$@"
+fi

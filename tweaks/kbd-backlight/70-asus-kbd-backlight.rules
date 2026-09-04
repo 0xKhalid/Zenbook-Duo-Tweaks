@@ -14,3 +14,10 @@ ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0003:0B05:1CD7
 ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0003:0B05:1CD7.*", ENV{ID_INPUT_TOUCHPAD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0005:0B05:1CD8.*", ENV{ID_INPUT_KEYBOARD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0005:0B05:1CD8.*", ENV{ID_INPUT_TOUCHPAD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+
+# input-remapper exclusively grabs a source while forwarding it through a
+# virtual device. Permit only exact forwarded copies of this ASUS hardware.
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{phys}=="input-remapper/*", ATTRS{id/bustype}=="0003", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd7", ATTRS{name}=="Primax Electronics Ltd. ASUS Zenbook Duo Keyboard", ENV{ID_INPUT_KEYBOARD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{phys}=="input-remapper/*", ATTRS{id/bustype}=="0003", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd7", ATTRS{name}=="Primax Electronics Ltd. ASUS Zenbook Duo Keyboard Touchpad", ENV{ID_INPUT_TOUCHPAD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{phys}=="input-remapper/*", ATTRS{id/bustype}=="0005", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd8", ATTRS{name}=="ASUS Zenbook Duo Keyboard", ENV{ID_INPUT_KEYBOARD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{phys}=="input-remapper/*", ATTRS{id/bustype}=="0005", ATTRS{id/vendor}=="0b05", ATTRS{id/product}=="1cd8", ATTRS{name}=="ASUS Zenbook Duo Keyboard Touchpad", ENV{ID_INPUT_TOUCHPAD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"

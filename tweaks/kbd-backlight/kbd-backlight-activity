@@ -2,8 +2,8 @@
 """Event-driven activity watcher for the UX8407AA detachable keyboard."""
 
 import errno
-import glob
 import hashlib
+import math
 import os
 import pathlib
 import re
@@ -15,17 +15,50 @@ import struct
 import subprocess
 import sys
 import time
+from collections import deque
+from statistics import median
 
 USB_ID = "0003:00000B05:00001CD7"
 BLUETOOTH_ID = "0005:00000B05:00001CD8"
 EVENT = struct.Struct("@llHHI")
 EV_KEY = 0x01
 EV_ABS = 0x03
+AMBIENT_POLL_SECONDS = 2.0
+AMBIENT_FAILURE_LIMIT = 3
+AMBIENT_SAMPLE_COUNT = 3
+AMBIENT_HYSTERESIS = 0.20
+AMBIENT_BANDS = (
+    ("dark", 3),
+    ("dim", 2),
+    ("normal", 1),
+    ("bright", 0),
+)
+FORWARDED_IDENTITIES = {
+    USB_ID: {
+        "bus": "0003",
+        "vendor": "0b05",
+        "product": "1cd7",
+        "keyboard": "Primax Electronics Ltd. ASUS Zenbook Duo Keyboard",
+        "touchpad": "Primax Electronics Ltd. ASUS Zenbook Duo Keyboard Touchpad",
+    },
+    BLUETOOTH_ID: {
+        "bus": "0005",
+        "vendor": "0b05",
+        "product": "1cd8",
+        "keyboard": "ASUS Zenbook Duo Keyboard",
+        "touchpad": "ASUS Zenbook Duo Keyboard Touchpad",
+    },
+}
 
 
 def fail(message):
     print(f"kbd-backlight activity: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def journal(message):
+    """Write only fixed, privacy-safe state transitions to the user journal."""
+    print(f"kbd-backlight activity: {message}", file=sys.stderr, flush=True)
 
 
 def read_properties(path):
@@ -95,6 +128,126 @@ def descriptor_valid(path):
     return False
 
 
+def input_kind(properties):
+    kinds = []
+    if properties.get("ID_INPUT_KEYBOARD") == "1":
+        kinds.append("keyboard")
+    if properties.get("ID_INPUT_TOUCHPAD") == "1":
+        kinds.append("touchpad")
+    return kinds[0] if len(kinds) == 1 else ""
+
+
+def read_attribute(path, name):
+    try:
+        return (path / name).read_text().strip()
+    except OSError:
+        return ""
+
+
+def discover_ambient_sensor(sysfs_root):
+    root = pathlib.Path(sysfs_root)
+    devices_root = root / "devices"
+    candidates = []
+    for entry in sorted((root / "bus/iio/devices").glob("iio:device*")):
+        try:
+            device = entry.resolve(strict=True)
+            device.relative_to(devices_root.resolve(strict=True))
+        except (OSError, ValueError):
+            continue
+        if read_attribute(device, "name") != "als":
+            continue
+        candidate = (entry, device)
+        if read_ambient_lux(candidate) is not None:
+            candidates.append(candidate)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def read_ambient_lux(sensor):
+    if sensor is None:
+        return None
+    entry, expected_device = sensor
+    try:
+        if entry.resolve(strict=True) != expected_device or read_attribute(expected_device, "name") != "als":
+            return None
+        raw_path = expected_device / "in_illuminance_raw"
+        scale_path = expected_device / "in_illuminance_scale"
+        offset_path = expected_device / "in_illuminance_offset"
+        if raw_path.is_symlink() or scale_path.is_symlink() or offset_path.is_symlink():
+            return None
+        if not os.access(raw_path, os.R_OK) or not os.access(scale_path, os.R_OK):
+            return None
+        raw = float(raw_path.read_text().strip())
+        scale = float(scale_path.read_text().strip())
+        offset = float(offset_path.read_text().strip()) if offset_path.exists() else 0.0
+        lux = (raw + offset) * scale
+    except (OSError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) for value in (raw, scale, offset, lux)):
+        return None
+    if scale <= 0 or lux < 0 or lux > 1_000_000:
+        return None
+    try:
+        if entry.resolve(strict=True) != expected_device:
+            return None
+    except OSError:
+        return None
+    return lux
+
+
+def base_ambient_band(lux, thresholds):
+    dark, dim, bright = thresholds
+    if lux < dark:
+        return 0
+    if lux < dim:
+        return 1
+    if lux < bright:
+        return 2
+    return 3
+
+
+def ambient_band(lux, thresholds, current=None):
+    candidate = base_ambient_band(lux, thresholds)
+    if current is None or candidate == current:
+        return candidate
+    if candidate > current:
+        boundary = thresholds[current]
+        if lux < boundary * (1.0 + AMBIENT_HYSTERESIS):
+            return current
+    else:
+        boundary = thresholds[current - 1]
+        if lux >= boundary * (1.0 - AMBIENT_HYSTERESIS):
+            return current
+    return candidate
+
+
+def sensor_status(sysfs_root):
+    lux = read_ambient_lux(discover_ambient_sensor(sysfs_root))
+    if lux is None:
+        print("status=unavailable")
+        return 1
+    print(f"status=available lux={lux:.1f}")
+    return 0
+
+
+def forwarded_activity_matches(root, device, identity, kind):
+    expected = FORWARDED_IDENTITIES.get(identity)
+    if expected is None:
+        return False
+    try:
+        virtual_root = (root / "devices/virtual/input").resolve(strict=True)
+    except OSError:
+        return False
+    if device.parent != virtual_root or not device.name.startswith("input"):
+        return False
+    return (
+        read_attribute(device, "phys").startswith("input-remapper/")
+        and read_attribute(device, "id/bustype").lower() == expected["bus"]
+        and read_attribute(device, "id/vendor").lower() == expected["vendor"]
+        and read_attribute(device, "id/product").lower() == expected["product"]
+        and read_attribute(device, "name") == expected[kind]
+    )
+
+
 def selected_backlight(sysfs_root):
     root = pathlib.Path(sysfs_root)
     matches = []
@@ -127,38 +280,77 @@ def selected_backlight(sysfs_root):
     return matches[0] if matches else None
 
 
-def activity_nodes(sysfs_root, dev_root, identity):
+def activity_candidates(sysfs_root, identity):
     root = pathlib.Path(sysfs_root)
-    nodes = []
-    kinds = set()
+    physical = {"keyboard": [], "touchpad": []}
+    forwarded = {"keyboard": [], "touchpad": []}
     for entry in sorted((root / "class/input").glob("event*")):
-        parent, found_identity = hid_parent(entry / "device")
-        if parent is None or found_identity != identity:
+        try:
+            device = (entry / "device").resolve(strict=True)
+        except OSError:
             continue
         properties = read_properties(entry)
-        if properties.get("ID_INPUT_KEYBOARD") == "1":
-            kind = "keyboard"
-        elif properties.get("ID_INPUT_TOUCHPAD") == "1":
-            kind = "touchpad"
+        kind = input_kind(properties)
+        if not kind:
+            continue
+        parent, found_identity = hid_parent(device)
+        if parent is not None and found_identity == identity:
+            physical[kind].append((entry, device))
+        elif forwarded_activity_matches(root, device, identity, kind):
+            forwarded[kind].append((entry, device))
+    return physical, forwarded
+
+
+def open_activity_node(dev_root, candidate, kind, source):
+    entry, expected_device = candidate
+    node = pathlib.Path(dev_root) / "input" / entry.name
+    try:
+        before = node.stat()
+    except OSError:
+        return None
+    if not stat.S_ISCHR(before.st_mode) or not os.access(node, os.R_OK):
+        return None
+    try:
+        descriptor = os.open(node, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        current_device = (entry / "device").resolve(strict=True)
+        if (
+            not stat.S_ISCHR(opened.st_mode)
+            or (opened.st_dev, opened.st_ino, opened.st_rdev)
+            != (before.st_dev, before.st_ino, before.st_rdev)
+            or current_device != expected_device
+        ):
+            raise OSError(errno.ENODEV, "input identity changed during open")
+    except OSError:
+        os.close(descriptor)
+        return None
+    return descriptor, kind, node.name, source
+
+
+def activity_nodes(sysfs_root, dev_root, identity):
+    physical, forwarded = activity_candidates(sysfs_root, identity)
+    selected = []
+    for kind in ("keyboard", "touchpad"):
+        if len(forwarded[kind]) > 1:
+            return []
+        if len(forwarded[kind]) == 1:
+            selected.append((forwarded[kind][0], kind, "forwarded"))
         else:
-            continue
-        node = pathlib.Path(dev_root) / "input" / entry.name
-        try:
-            details = node.stat()
-        except OSError:
-            continue
-        if not stat.S_ISCHR(details.st_mode) or not os.access(node, os.R_OK):
-            continue
-        try:
-            descriptor = os.open(node, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-        except OSError:
-            continue
-        nodes.append((descriptor, kind, node.name))
-        kinds.add(kind)
-    if not {"keyboard", "touchpad"}.issubset(kinds):
-        for descriptor, _, _ in nodes:
-            os.close(descriptor)
+            selected.extend((candidate, kind, "physical") for candidate in physical[kind])
+    if not {kind for _, kind, _ in selected}.issuperset({"keyboard", "touchpad"}):
         return []
+
+    nodes = []
+    for candidate, kind, source in selected:
+        opened = open_activity_node(dev_root, candidate, kind, source)
+        if opened is None:
+            for descriptor, _, _, _ in nodes:
+                os.close(descriptor)
+            return []
+        nodes.append(opened)
     return nodes
 
 
@@ -209,15 +401,29 @@ def controller_call(controller, *arguments):
     result = subprocess.run(
         [controller, *arguments],
         check=False,
-        stdout=subprocess.DEVNULL,
+        text=True,
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         env={**os.environ, "KBD_BACKLIGHT_DISABLE_OSD": "1"},
     )
-    return result.returncode == 0
+    if result.returncode:
+        return None
+    outcome = result.stdout.strip()
+    return outcome if re.fullmatch(r"result=[a-z-]+", outcome) else "result=ok"
 
 
 class Watcher:
-    def __init__(self, controller, timeout, sysfs_root, dev_root):
+    def __init__(
+        self,
+        controller,
+        timeout,
+        ambient_enabled,
+        ambient_dark,
+        ambient_dim,
+        ambient_bright,
+        sysfs_root,
+        dev_root,
+    ):
         self.controller = controller
         self.timeout = timeout
         self.sysfs_root = sysfs_root
@@ -227,10 +433,25 @@ class Watcher:
         self.input_descriptors = {}
         self.input_buffers = {}
         self.input_names = {}
+        self.input_sources = {}
         self.connection_token = None
         self.deadline = None
         self.idled = False
         self.rescan_due = 0.0
+        self.reported_topology = None
+        self.ambient_enabled = ambient_enabled
+        self.ambient_thresholds = (ambient_dark, ambient_dim, ambient_bright)
+        self.ambient_sensor = None
+        self.ambient_samples = deque(maxlen=AMBIENT_SAMPLE_COUNT)
+        self.ambient_invalid = 0
+        self.ambient_status = "warming" if ambient_enabled else "disabled"
+        self.ambient_lux = None
+        self.ambient_band = None
+        self.ambient_target = None
+        self.ambient_fallback_applied = False
+        self.sensor_due = time.monotonic() if ambient_enabled else 0.0
+        self.health_topology = None
+        self.last_health_content = None
         runtime = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
         self.health_file = runtime / "zenbook-tweaks" / "kbd-backlight-watcher"
 
@@ -239,7 +460,44 @@ class Watcher:
         if not self.rescan_due or due < self.rescan_due:
             self.rescan_due = due
 
-    def write_health(self, transport, keyboard, touchpad):
+    def write_health(
+        self, transport, keyboard, keyboard_source, touchpad, touchpad_source
+    ):
+        self.health_topology = (
+            transport,
+            keyboard,
+            keyboard_source,
+            touchpad,
+            touchpad_source,
+        )
+        self.flush_health()
+
+    def flush_health(self):
+        if self.health_topology is None:
+            return
+        transport, keyboard, keyboard_source, touchpad, touchpad_source = (
+            self.health_topology
+        )
+        ambient_lux = (
+            str(round(self.ambient_lux)) if self.ambient_lux is not None else "none"
+        )
+        ambient_band_name = (
+            AMBIENT_BANDS[self.ambient_band][0]
+            if self.ambient_band is not None
+            else "none"
+        )
+        ambient_target = (
+            str(self.ambient_target) if self.ambient_target is not None else "none"
+        )
+        content = (
+            f"version=3\ntransport={transport}\n"
+            f"keyboard={keyboard}\nkeyboard_source={keyboard_source}\n"
+            f"touchpad={touchpad}\ntouchpad_source={touchpad_source}\n"
+            f"ambient_status={self.ambient_status}\nambient_lux={ambient_lux}\n"
+            f"ambient_band={ambient_band_name}\nambient_target={ambient_target}\n"
+        ).encode()
+        if content == self.last_health_content:
+            return
         directory = self.health_file.parent
         try:
             if directory.is_symlink():
@@ -255,14 +513,11 @@ class Watcher:
                 0o600,
             )
             try:
-                content = (
-                    f"version=1\ntransport={transport}\n"
-                    f"keyboard={keyboard}\ntouchpad={touchpad}\n"
-                ).encode()
                 os.write(descriptor, content)
             finally:
                 os.close(descriptor)
             os.replace(temporary, self.health_file)
+            self.last_health_content = content
         except OSError:
             try:
                 temporary.unlink()
@@ -284,6 +539,7 @@ class Watcher:
         self.input_descriptors.pop(descriptor, None)
         self.input_buffers.pop(descriptor, None)
         self.input_names.pop(descriptor, None)
+        self.input_sources.pop(descriptor, None)
         try:
             os.close(descriptor)
         except OSError:
@@ -293,6 +549,89 @@ class Watcher:
         for descriptor in list(self.input_descriptors):
             self.drop_input(descriptor)
 
+    def report_topology(self, topology, message):
+        if topology != self.reported_topology:
+            journal(message)
+            self.reported_topology = topology
+
+    def reset_ambient(self, waiting=False):
+        if not self.ambient_enabled:
+            return
+        self.ambient_sensor = None
+        self.ambient_samples.clear()
+        self.ambient_invalid = 0
+        self.ambient_status = "waiting" if waiting else "warming"
+        self.ambient_lux = None
+        self.ambient_band = None
+        self.ambient_target = None
+        self.ambient_fallback_applied = False
+        self.sensor_due = time.monotonic()
+
+    def poll_ambient(self):
+        if not self.ambient_enabled:
+            return
+        self.sensor_due = time.monotonic() + AMBIENT_POLL_SECONDS
+        if self.connection_token is None:
+            self.ambient_status = "waiting"
+            self.flush_health()
+            return
+        if self.ambient_sensor is None:
+            self.ambient_sensor = discover_ambient_sensor(self.sysfs_root)
+        lux = read_ambient_lux(self.ambient_sensor)
+        if lux is None:
+            self.ambient_sensor = None
+            self.ambient_samples.clear()
+            self.ambient_lux = None
+            self.ambient_invalid += 1
+            if self.ambient_invalid < AMBIENT_FAILURE_LIMIT:
+                self.ambient_status = "warming"
+                self.flush_health()
+                return
+            self.ambient_status = "unavailable"
+            self.ambient_band = None
+            if not self.ambient_fallback_applied:
+                outcome = controller_call(self.controller, "_auto-target", "1", "fallback")
+                if outcome is not None:
+                    self.ambient_target = 1
+                    self.ambient_fallback_applied = True
+                    journal(
+                        f"ambient sensor=unavailable target=low result={outcome.removeprefix('result=')}"
+                    )
+            self.flush_health()
+            return
+
+        self.ambient_invalid = 0
+        self.ambient_lux = lux
+        self.ambient_samples.append(lux)
+        if len(self.ambient_samples) < AMBIENT_SAMPLE_COUNT:
+            self.ambient_status = "warming"
+            self.flush_health()
+            return
+
+        smoothed = median(self.ambient_samples)
+        self.ambient_fallback_applied = False
+        candidate = ambient_band(
+            smoothed, self.ambient_thresholds, self.ambient_band
+        )
+        target = AMBIENT_BANDS[candidate][1]
+        self.ambient_status = "available"
+        if candidate != self.ambient_band or target != self.ambient_target:
+            outcome = controller_call(
+                self.controller, "_auto-target", str(target), "ambient"
+            )
+            if outcome is None:
+                journal("controller action=ambient result=failed")
+                self.flush_health()
+                return
+            self.ambient_band = candidate
+            self.ambient_target = target
+            journal(
+                f"ambient band={AMBIENT_BANDS[candidate][0]} "
+                f"target={('off', 'low', 'medium', 'high')[target]} "
+                f"result={outcome.removeprefix('result=')}"
+            )
+        self.flush_health()
+
     def rescan(self):
         self.close_inputs()
         selected = selected_backlight(self.sysfs_root)
@@ -300,40 +639,94 @@ class Watcher:
             self.connection_token = None
             self.deadline = None
             self.idled = False
-            self.write_health("disconnected", "none", "none")
+            self.reset_ambient(waiting=True)
+            self.write_health("disconnected", "none", "none", "none", "none")
+            self.report_topology(
+                ("disconnected",), "connection transport=disconnected"
+            )
             return
         transport, identity, token = selected
         nodes = activity_nodes(self.sysfs_root, self.dev_root, identity)
         if not nodes:
-            self.write_health(transport, "unavailable", "unavailable")
+            self.deadline = None
+            self.write_health(
+                transport,
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            )
+            self.report_topology(
+                ("unavailable", transport),
+                f"activity-sources transport={transport} keyboard=unavailable touchpad=unavailable",
+            )
             self.schedule_rescan(1.0)
             return
         names = {"keyboard": [], "touchpad": []}
-        for descriptor, kind, name in nodes:
+        sources = {"keyboard": set(), "touchpad": set()}
+        for descriptor, kind, name, source in nodes:
             self.input_descriptors[descriptor] = kind
             self.input_buffers[descriptor] = b""
             self.input_names[descriptor] = name
+            self.input_sources[descriptor] = source
             names[kind].append(name)
+            sources[kind].add(source)
             self.selector.register(descriptor, selectors.EVENT_READ, "input")
         if token != self.connection_token:
-            if not controller_call(self.controller, "_auto-connect", self.session, token):
+            outcome = controller_call(
+                self.controller, "_auto-connect", self.session, token
+            )
+            if outcome is None:
+                self.deadline = None
+                journal(f"controller action=connect transport={transport} result=failed")
                 self.schedule_rescan(1.0)
                 return
             self.connection_token = token
             self.idled = False
-        self.deadline = time.monotonic() + self.timeout
+            self.reset_ambient()
+            initialization = outcome.removeprefix("result=")
+            journal(
+                f"connection transport={transport} initialization={initialization}"
+            )
+        if self.deadline is None:
+            self.deadline = time.monotonic() + self.timeout
         self.rescan_due = 0.0
+        keyboard_source = next(iter(sources["keyboard"]))
+        touchpad_source = next(iter(sources["touchpad"]))
         self.write_health(
             transport,
             ",".join(sorted(names["keyboard"])),
+            keyboard_source,
             ",".join(sorted(names["touchpad"])),
+            touchpad_source,
+        )
+        self.report_topology(
+            ("ready", transport, keyboard_source, touchpad_source),
+            f"activity-sources transport={transport} keyboard={keyboard_source} touchpad={touchpad_source}",
         )
 
-    def activity(self):
+    def activity(self, kind, source):
         self.deadline = time.monotonic() + self.timeout
         if self.idled:
-            controller_call(self.controller, "_auto-resume")
+            outcome = controller_call(self.controller, "_auto-resume")
+            if outcome is None:
+                journal(
+                    f"controller action=resume source={kind}-{source} result=failed"
+                )
+                return
+            if outcome == "result=resumed":
+                journal(f"activity-restored source={kind}-{source}")
             self.idled = False
+
+    def idle_if_due(self):
+        outcome = controller_call(self.controller, "_auto-idle")
+        if outcome is None:
+            journal("controller action=idle result=failed")
+            self.deadline = time.monotonic() + min(5, self.timeout)
+            return
+        self.idled = True
+        if outcome == "result=idled":
+            journal(f"idle-off timeout={self.timeout}")
 
     def input_ready(self, descriptor):
         try:
@@ -359,7 +752,7 @@ class Watcher:
                 active = True
         self.input_buffers[descriptor] = buffer
         if active:
-            self.activity()
+            self.activity(kind, self.input_sources[descriptor])
 
     def run_production(self):
         monitor = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 15)
@@ -375,6 +768,8 @@ class Watcher:
                 waits.append(max(0.0, self.deadline - now))
             if self.rescan_due:
                 waits.append(max(0.0, self.rescan_due - now))
+            if self.ambient_enabled and self.connection_token is not None:
+                waits.append(max(0.0, self.sensor_due - now))
             timeout = min(waits) if waits else None
             for key, _ in self.selector.select(timeout):
                 if key.data == "udev":
@@ -390,9 +785,14 @@ class Watcher:
             now = time.monotonic()
             if self.rescan_due and now >= self.rescan_due:
                 self.rescan()
+            if (
+                self.ambient_enabled
+                and self.connection_token is not None
+                and now >= self.sensor_due
+            ):
+                self.poll_ambient()
             if self.deadline is not None and not self.idled and now >= self.deadline:
-                controller_call(self.controller, "_auto-idle")
-                self.idled = True
+                self.idle_if_due()
 
     def run_test_source(self, helper):
         process = subprocess.Popen(
@@ -405,16 +805,19 @@ class Watcher:
                 wait = max(0.0, self.deadline - time.monotonic())
             events = self.selector.select(wait)
             if not events:
-                controller_call(self.controller, "_auto-idle")
-                self.idled = True
+                self.idle_if_due()
                 continue
             line = process.stdout.readline()
             if not line:
                 return process.wait()
             fields = line.strip().split()
             if len(fields) == 2 and fields[0] == "connect" and re.fullmatch(r"[0-9a-f]{64}", fields[1]):
+                outcome = controller_call(
+                    self.controller, "_auto-connect", self.session, fields[1]
+                )
+                if outcome is None:
+                    continue
                 self.connection_token = fields[1]
-                controller_call(self.controller, "_auto-connect", self.session, fields[1])
                 self.deadline = time.monotonic() + self.timeout
                 self.idled = False
             elif fields == ["disconnect"]:
@@ -422,18 +825,32 @@ class Watcher:
                 self.deadline = None
                 self.idled = False
             elif fields and fields[0] in {"keyboard", "touchpad"}:
-                self.activity()
+                self.activity(fields[0], "test")
 
 
 def main():
-    if len(sys.argv) != 3 or not sys.argv[2].isdigit():
-        fail("usage: kbd-backlight-activity CONTROLLER TIMEOUT_SECONDS")
+    if sys.argv[1:] == ["--sensor-status"]:
+        return sensor_status(os.environ.get("KBD_BACKLIGHT_SYSFS_ROOT", "/sys"))
+    if len(sys.argv) != 7 or not all(value.isdigit() for value in sys.argv[2:]):
+        fail(
+            "usage: kbd-backlight-activity CONTROLLER TIMEOUT_SECONDS "
+            "AMBIENT_ENABLED DARK_LUX DIM_LUX BRIGHT_LUX"
+        )
     timeout = int(sys.argv[2])
     if timeout < 1 or timeout > 7200:
         fail("invalid timeout")
+    ambient_enabled = int(sys.argv[3])
+    thresholds = tuple(int(value) for value in sys.argv[4:7])
+    if (
+        ambient_enabled not in {0, 1}
+        or not 1 <= thresholds[0] < thresholds[1] < thresholds[2] <= 100_000
+    ):
+        fail("invalid ambient configuration")
     watcher = Watcher(
         sys.argv[1],
         timeout,
+        bool(ambient_enabled),
+        *thresholds,
         os.environ.get("KBD_BACKLIGHT_SYSFS_ROOT", "/sys"),
         os.environ.get("KBD_BACKLIGHT_DEV_ROOT", "/dev"),
     )

@@ -9,7 +9,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 44 |
 | **Desktop** | KDE Plasma Wayland 6.7.4 |
-| **Kernel** | 7.1.12-200.fc44.x86_64 |
+| **Kernel** | 7.1.13-200.fc44.x86_64 |
 | **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
 | **Driver** | `xe` |
 
@@ -22,7 +22,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | `intel-display-stability` | Prevent Intel screen corruption and freezes |
 | `span-both-screens` | Span maximized windows across both screens |
 | `brightness-lock` | Keep the lower screen at full brightness |
-| `kbd-backlight` | Secure Fn+F4 control for the detachable keyboard backlight |
+| `kbd-backlight` | Secure Fn+F4, idle, and optional ambient control for the keyboard backlight |
 | `speaker-fix` | Fix silent built-in speakers |
 | `whisper-dictate` | Private, on-device voice typing |
 | `heic-support` | Open HEIC and HEIF images in KDE |
@@ -119,6 +119,12 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.14 - Adaptive ambient keyboard lighting:
+- Fixed automatic backlight idling while typing through Input Remapper by monitoring its narrowly verified forwarded ASUS keyboard event.
+- Added opt-in ambient lighting with configurable High/Medium/Low/Off lux thresholds, smoothing, manual override, and safe Low fallback.
+- Kept physical hardware authoritative, with source-aware diagnostics, privacy-safe transition logs, and exact rollback.
+- Updated Tested On metadata for kernel `7.1.13-200.fc44.x86_64`.
 
 ### v2.13 - Authoritative detachable-keyboard backlight control:
 - Consolidated reliable USB and Bluetooth keyboard-backlight control, preserving Fn+F4 and adding Plasma level feedback.

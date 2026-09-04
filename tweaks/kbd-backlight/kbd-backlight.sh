@@ -47,8 +47,18 @@ STATE_SOURCE=""
 STATE_IDLE_SUPPRESSED=0
 AUTO_ENABLED=1
 IDLE_TIMEOUT_SECONDS=900
+AMBIENT_ENABLED=0
+AMBIENT_DARK_LUX=10
+AMBIENT_DIM_LUX=75
+AMBIENT_BRIGHT_LUX=300
 ACTIVITY_KEYBOARD=missing
 ACTIVITY_TOUCHPAD=missing
+ACTIVITY_KEYBOARD_SOURCE=missing
+ACTIVITY_TOUCHPAD_SOURCE=missing
+WATCHER_AMBIENT_STATUS=unavailable
+WATCHER_AMBIENT_LUX=none
+WATCHER_AMBIENT_BAND=none
+WATCHER_AMBIENT_TARGET=none
 
 level_name()
 {
@@ -431,7 +441,7 @@ load_state()
 		[[ "${STATE_TRANSPORT}" == usb || "${STATE_TRANSPORT}" == bluetooth || "${STATE_TRANSPORT}" == legacy ]] || return 1
 		return 0
 	fi
-	[[ "${version}" == 2 ]] || return 1
+	[[ "${version}" == 2 || "${version}" == 3 ]] || return 1
 	awk -F= '
 		BEGIN {
 			expected["version"]=1; expected["preferred_level"]=1
@@ -448,7 +458,12 @@ load_state()
 	STATE_IDLE_SUPPRESSED="$(state_value idle_suppressed)"
 	[[ "${STATE_PREFERRED}" =~ ^[0-3]$ && "${STATE_EFFECTIVE}" =~ ^[0-3]$ ]] || return 1
 	[[ "${STATE_TRANSPORT}" == usb || "${STATE_TRANSPORT}" == bluetooth || "${STATE_TRANSPORT}" == legacy ]] || return 1
-	[[ "${STATE_SOURCE}" == default || "${STATE_SOURCE}" == manual || "${STATE_SOURCE}" == legacy ]] || return 1
+	if [[ "${version}" == 2 ]]; then
+		[[ "${STATE_SOURCE}" == default || "${STATE_SOURCE}" == manual || "${STATE_SOURCE}" == legacy ]] || return 1
+	else
+		[[ "${STATE_SOURCE}" == default || "${STATE_SOURCE}" == manual ||
+			"${STATE_SOURCE}" == legacy || "${STATE_SOURCE}" == ambient ]] || return 1
+	fi
 	[[ "${STATE_IDLE_SUPPRESSED}" == 0 || "${STATE_IDLE_SUPPRESSED}" == 1 ]] || return 1
 }
 
@@ -458,7 +473,8 @@ write_state()
 	local temporary
 	[[ "${preferred}" =~ ^[0-3]$ && "${effective}" =~ ^[0-3]$ ]] || return 1
 	[[ "${transport}" == usb || "${transport}" == bluetooth || "${transport}" == legacy ]] || return 1
-	[[ "${source}" == default || "${source}" == manual || "${source}" == legacy ]] || return 1
+	[[ "${source}" == default || "${source}" == manual ||
+		"${source}" == legacy || "${source}" == ambient ]] || return 1
 	[[ "${suppressed}" == 0 || "${suppressed}" == 1 ]] || return 1
 	prepare_state_directory || {
 		echo "Error: unsafe keyboard-backlight state directory" >&2
@@ -474,7 +490,7 @@ write_state()
 	temporary="$(mktemp "${STATE_DIR}/.state.XXXXXX")"
 	chmod 600 -- "${temporary}"
 	{
-		printf 'version=2\npreferred_level=%s\neffective_level=%s\n' "${preferred}" "${effective}"
+		printf 'version=3\npreferred_level=%s\neffective_level=%s\n' "${preferred}" "${effective}"
 		printf 'transport=%s\npreference_source=%s\nidle_suppressed=%s\n' \
 			"${transport}" "${source}" "${suppressed}"
 	} > "${temporary}"
@@ -496,32 +512,65 @@ write_cached_level()
 
 load_config()
 {
-	local owner mode
+	local owner mode version
 	AUTO_ENABLED=1
 	IDLE_TIMEOUT_SECONDS=900
+	AMBIENT_ENABLED=0
+	AMBIENT_DARK_LUX=10
+	AMBIENT_DIM_LUX=75
+	AMBIENT_BRIGHT_LUX=300
 	[[ -e "${CONFIG_FILE}" || -L "${CONFIG_FILE}" ]] || return 0
 	[[ -f "${CONFIG_FILE}" && ! -L "${CONFIG_FILE}" ]] || return 1
 	owner="$(stat -Lc '%u' -- "${CONFIG_FILE}" 2>/dev/null || true)"
 	mode="$(stat -Lc '%a' -- "${CONFIG_FILE}" 2>/dev/null || true)"
 	[[ "${owner}" == "$(id -u)" && "${mode}" == 600 ]] || return 1
-	awk -F= '
-		BEGIN {expected["version"]=1; expected["enabled"]=1; expected["idle_timeout_seconds"]=1}
-		NF != 2 || !($1 in expected) || seen[$1]++ {bad=1}
-		END {for (key in expected) if (seen[key] != 1) bad=1; exit bad}
-	' "${CONFIG_FILE}" || return 1
-	[[ "$(awk -F= '$1 == "version" {print $2}' "${CONFIG_FILE}")" == 1 ]] || return 1
+	version="$(awk -F= '$1 == "version" {print $2}' "${CONFIG_FILE}")"
+	if [[ "${version}" == 1 ]]; then
+		awk -F= '
+			BEGIN {expected["version"]=1; expected["enabled"]=1; expected["idle_timeout_seconds"]=1}
+			NF != 2 || !($1 in expected) || seen[$1]++ {bad=1}
+			END {for (key in expected) if (seen[key] != 1) bad=1; exit bad}
+		' "${CONFIG_FILE}" || return 1
+	elif [[ "${version}" == 2 ]]; then
+		awk -F= '
+			BEGIN {
+				expected["version"]=1; expected["enabled"]=1; expected["idle_timeout_seconds"]=1
+				expected["ambient_enabled"]=1; expected["ambient_dark_lux"]=1
+				expected["ambient_dim_lux"]=1; expected["ambient_bright_lux"]=1
+			}
+			NF != 2 || !($1 in expected) || seen[$1]++ {bad=1}
+			END {for (key in expected) if (seen[key] != 1) bad=1; exit bad}
+		' "${CONFIG_FILE}" || return 1
+		AMBIENT_ENABLED="$(awk -F= '$1 == "ambient_enabled" {print $2}' "${CONFIG_FILE}")"
+		AMBIENT_DARK_LUX="$(awk -F= '$1 == "ambient_dark_lux" {print $2}' "${CONFIG_FILE}")"
+		AMBIENT_DIM_LUX="$(awk -F= '$1 == "ambient_dim_lux" {print $2}' "${CONFIG_FILE}")"
+		AMBIENT_BRIGHT_LUX="$(awk -F= '$1 == "ambient_bright_lux" {print $2}' "${CONFIG_FILE}")"
+	else
+		return 1
+	fi
 	AUTO_ENABLED="$(awk -F= '$1 == "enabled" {print $2}' "${CONFIG_FILE}")"
 	IDLE_TIMEOUT_SECONDS="$(awk -F= '$1 == "idle_timeout_seconds" {print $2}' "${CONFIG_FILE}")"
 	[[ "${AUTO_ENABLED}" == 0 || "${AUTO_ENABLED}" == 1 ]] || return 1
+	[[ "${AMBIENT_ENABLED}" == 0 || "${AMBIENT_ENABLED}" == 1 ]] || return 1
 	[[ "${IDLE_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || return 1
-	(( IDLE_TIMEOUT_SECONDS >= 60 && IDLE_TIMEOUT_SECONDS <= 7200 ))
+	(( IDLE_TIMEOUT_SECONDS >= 60 && IDLE_TIMEOUT_SECONDS <= 7200 )) || return 1
+	ambient_thresholds_valid "${AMBIENT_DARK_LUX}" "${AMBIENT_DIM_LUX}" "${AMBIENT_BRIGHT_LUX}"
+}
+
+ambient_thresholds_valid()
+{
+	local dark="$1" dim="$2" bright="$3"
+	[[ "${dark}" =~ ^[0-9]+$ && "${dim}" =~ ^[0-9]+$ && "${bright}" =~ ^[0-9]+$ ]] || return 1
+	(( dark >= 1 && dark < dim && dim < bright && bright <= 100000 ))
 }
 
 write_config()
 {
-	local enabled="$1" seconds="$2" temporary
+	local enabled="$1" seconds="$2" ambient="$3" dark="$4" dim="$5" bright="$6" temporary
 	[[ "${enabled}" == 0 || "${enabled}" == 1 ]] || return 1
+	[[ "${ambient}" == 0 || "${ambient}" == 1 ]] || return 1
 	[[ "${seconds}" =~ ^[0-9]+$ ]] && (( seconds >= 60 && seconds <= 7200 )) || return 1
+	ambient_thresholds_valid "${dark}" "${dim}" "${bright}" || return 1
 	ensure_private_directory "${CONFIG_DIR}" || {
 		echo "Error: unsafe keyboard-backlight configuration directory" >&2
 		return 1
@@ -532,7 +581,11 @@ write_config()
 	fi
 	temporary="$(mktemp "${CONFIG_DIR}/.kbd-backlight.conf.XXXXXX")"
 	chmod 600 -- "${temporary}"
-	printf 'version=1\nenabled=%s\nidle_timeout_seconds=%s\n' "${enabled}" "${seconds}" > "${temporary}"
+	{
+		printf 'version=2\nenabled=%s\nidle_timeout_seconds=%s\n' "${enabled}" "${seconds}"
+		printf 'ambient_enabled=%s\nambient_dark_lux=%s\n' "${ambient}" "${dark}"
+		printf 'ambient_dim_lux=%s\nambient_bright_lux=%s\n' "${dim}" "${bright}"
+	} > "${temporary}"
 	mv -f -- "${temporary}" "${CONFIG_FILE}"
 }
 
@@ -635,7 +688,10 @@ run_auto_connect()
 	[[ "${session_token}" =~ ^[0-9a-f]{64}$ && "${connection_token}" =~ ^[0-9a-f]{64}$ ]] || return 2
 	prepare_lock
 	load_config || return 1
-	[[ "${AUTO_ENABLED}" == 1 ]] || return 0
+	if [[ "${AUTO_ENABLED}" != 1 ]]; then
+		echo "result=disabled"
+		return 0
+	fi
 	if [[ -e "${SESSION_FILE}" || -L "${SESSION_FILE}" ]]; then
 		session_marker_valid || {
 			echo "Error: unsafe keyboard-backlight session marker" >&2
@@ -643,6 +699,7 @@ run_auto_connect()
 		}
 	fi
 	if session_marker_matches "${session_token}" "${connection_token}"; then
+		echo "result=unchanged"
 		return 0
 	fi
 	discover_device true || return 1
@@ -653,6 +710,7 @@ run_auto_connect()
 	[[ "${result}" =~ ^before=([0-3]|unavailable)[[:space:]]after=1[[:space:]]verification=verified$ ]] || return 1
 	write_state 1 1 "${DEVICE_TRANSPORT}" default 0
 	write_session_marker "${session_token}" "${connection_token}"
+	echo "result=initialized"
 }
 
 run_auto_idle()
@@ -660,16 +718,34 @@ run_auto_idle()
 	local result
 	prepare_lock
 	load_config || return 1
-	[[ "${AUTO_ENABLED}" == 1 ]] || return 0
-	load_state || return 0
-	[[ "${STATE_IDLE_SUPPRESSED}" == 0 ]] || return 0
-	if [[ "${STATE_PREFERRED}" == 0 ]]; then
+	if [[ "${AUTO_ENABLED}" != 1 ]]; then
+		echo "result=disabled"
 		return 0
 	fi
-	discover_device true || return 0
+	if ! load_state; then
+		echo "result=unavailable"
+		return 0
+	fi
+	if [[ "${STATE_IDLE_SUPPRESSED}" != 0 ]]; then
+		echo "result=already-idle"
+		return 0
+	fi
+	if [[ "${STATE_PREFERRED}" == 0 ]]; then
+		if [[ "${STATE_SOURCE}" == ambient ]]; then
+			echo "result=ambient-off"
+		else
+			echo "result=manual-off"
+		fi
+		return 0
+	fi
+	if ! discover_device true; then
+		echo "result=disconnected"
+		return 0
+	fi
 	result="$(hid_operation set 0 2>&1)" || return 1
 	[[ "${result}" =~ ^before=([0-3]|unavailable)[[:space:]]after=0[[:space:]]verification=verified$ ]] || return 1
 	write_state "${STATE_PREFERRED}" 0 "${DEVICE_TRANSPORT}" "${STATE_SOURCE}" 1
+	echo "result=idled"
 }
 
 run_auto_resume()
@@ -677,20 +753,121 @@ run_auto_resume()
 	local result preferred source
 	prepare_lock
 	load_config || return 1
-	[[ "${AUTO_ENABLED}" == 1 ]] || return 0
-	load_state || return 0
-	[[ "${STATE_IDLE_SUPPRESSED}" == 1 ]] || return 0
+	if [[ "${AUTO_ENABLED}" != 1 ]]; then
+		echo "result=disabled"
+		return 0
+	fi
+	if ! load_state; then
+		echo "result=unavailable"
+		return 0
+	fi
+	if [[ "${STATE_IDLE_SUPPRESSED}" != 1 ]]; then
+		echo "result=active"
+		return 0
+	fi
 	preferred="${STATE_PREFERRED}"
 	source="${STATE_SOURCE}"
 	if [[ "${preferred}" == 0 ]]; then
 		write_state 0 0 "${STATE_TRANSPORT}" "${source}" 0
+		echo "result=manual-off"
 		return 0
 	fi
-	discover_device true || return 0
+	if ! discover_device true; then
+		echo "result=disconnected"
+		return 0
+	fi
 	result="$(hid_operation set "${preferred}" 2>&1)" || return 1
 	[[ "${result}" =~ ^before=([0-3]|unavailable)[[:space:]]after=([0-3])[[:space:]]verification=verified$ &&
 		"${BASH_REMATCH[2]}" == "${preferred}" ]] || return 1
 	write_state "${preferred}" "${preferred}" "${DEVICE_TRANSPORT}" "${source}" 0
+	echo "result=resumed"
+}
+
+run_auto_target()
+{
+	local target="$1" mode="$2" source result
+	[[ "${target}" =~ ^[0-3]$ ]] || return 2
+	[[ "${mode}" == ambient || "${mode}" == fallback ]] || return 2
+	prepare_lock
+	load_config || return 1
+	if [[ "${AUTO_ENABLED}" != 1 || "${AMBIENT_ENABLED}" != 1 ]]; then
+		echo "result=disabled"
+		return 0
+	fi
+	if ! load_state; then
+		echo "result=unavailable"
+		return 0
+	fi
+	if [[ "${STATE_SOURCE}" == manual ]]; then
+		echo "result=manual-override"
+		return 0
+	fi
+	[[ "${mode}" == ambient ]] && source=ambient || source=default
+	if [[ "${STATE_IDLE_SUPPRESSED}" == 1 ]]; then
+		write_state "${target}" 0 "${STATE_TRANSPORT}" "${source}" 1
+		echo "result=deferred-idle"
+		return 0
+	fi
+	if ! discover_device true; then
+		echo "result=disconnected"
+		return 0
+	fi
+	if [[ "${STATE_EFFECTIVE}" == "${target}" ]]; then
+		write_state "${target}" "${target}" "${DEVICE_TRANSPORT}" "${source}" 0
+		echo "result=unchanged"
+		return 0
+	fi
+	result="$(hid_operation set "${target}" 2>&1)" || return 1
+	[[ "${result}" =~ ^before=([0-3]|unavailable)[[:space:]]after=([0-3])[[:space:]]verification=verified$ &&
+		"${BASH_REMATCH[2]}" == "${target}" ]] || return 1
+	write_state "${target}" "${target}" "${DEVICE_TRANSPORT}" "${source}" 0
+	[[ "${mode}" == ambient ]] && echo "result=ambient-updated" || echo "result=fallback-low"
+}
+
+run_auto_fixed()
+{
+	local result
+	prepare_lock
+	load_config || return 1
+	if ! load_state; then
+		echo "result=unavailable"
+		return 0
+	fi
+	if [[ "${STATE_SOURCE}" == manual ]]; then
+		echo "result=manual-override"
+		return 0
+	fi
+	if [[ "${STATE_SOURCE}" != ambient ]]; then
+		echo "result=unchanged"
+		return 0
+	fi
+	if [[ "${STATE_IDLE_SUPPRESSED}" == 1 ]]; then
+		write_state 1 0 "${STATE_TRANSPORT}" default 1
+		echo "result=deferred-idle"
+		return 0
+	fi
+	if ! discover_device true; then
+		echo "result=disconnected"
+		return 0
+	fi
+	if [[ "${STATE_EFFECTIVE}" != 1 ]]; then
+		result="$(hid_operation set 1 2>&1)" || return 1
+		[[ "${result}" =~ ^before=([0-3]|unavailable)[[:space:]]after=1[[:space:]]verification=verified$ ]] || return 1
+	fi
+	write_state 1 1 "${DEVICE_TRANSPORT}" default 0
+	echo "result=fixed-low"
+}
+
+run_migrate()
+{
+	prepare_lock
+	load_config || return 1
+	write_config "${AUTO_ENABLED}" "${IDLE_TIMEOUT_SECONDS}" "${AMBIENT_ENABLED}" \
+		"${AMBIENT_DARK_LUX}" "${AMBIENT_DIM_LUX}" "${AMBIENT_BRIGHT_LUX}"
+	if load_state 2>/dev/null; then
+		write_state "${STATE_PREFERRED}" "${STATE_EFFECTIVE}" "${STATE_TRANSPORT}" \
+			"${STATE_SOURCE}" "${STATE_IDLE_SUPPRESSED}"
+	fi
 }
 
 run_daemon()
@@ -704,14 +881,15 @@ run_daemon()
 		echo "Error: keyboard-backlight activity helper is unavailable" >&2
 		return 1
 	}
-	exec "${ACTIVITY_HELPER}" "${0}" "${IDLE_TIMEOUT_SECONDS}"
+	exec "${ACTIVITY_HELPER}" "${0}" "${IDLE_TIMEOUT_SECONDS}" "${AMBIENT_ENABLED}" \
+		"${AMBIENT_DARK_LUX}" "${AMBIENT_DIM_LUX}" "${AMBIENT_BRIGHT_LUX}"
 }
 
 run_configure()
 {
-	local enabled="$1" seconds="$2"
+	local enabled="$1" seconds="$2" ambient="$3" dark="$4" dim="$5" bright="$6"
 	prepare_lock
-	write_config "${enabled}" "${seconds}"
+	write_config "${enabled}" "${seconds}" "${ambient}" "${dark}" "${dim}" "${bright}"
 }
 
 run_get()
@@ -755,36 +933,144 @@ shortcut_status()
 	printf 'Shortcut: configured=%s; runtime=%s\n' "${configured:-none}" "${runtime}"
 }
 
+forwarded_activity_matches()
+{
+	local input="$1" kind="$2" target phys bus vendor product name expected_name
+	target="$(readlink -f -- "${input}/device" 2>/dev/null || true)"
+	[[ "$(dirname -- "${target}")" == "${SYSFS_ROOT}/devices/virtual/input" &&
+		"$(basename -- "${target}")" == input* ]] || return 1
+	phys="$(sed -n '1p' "${target}/phys" 2>/dev/null || true)"
+	[[ "${phys}" == input-remapper/* ]] || return 1
+	bus="$(sed -n '1p' "${target}/id/bustype" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+	vendor="$(sed -n '1p' "${target}/id/vendor" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+	product="$(sed -n '1p' "${target}/id/product" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+	name="$(sed -n '1p' "${target}/name" 2>/dev/null || true)"
+	case "${DEVICE_TRANSPORT}:${kind}" in
+		usb:keyboard) expected_name='Primax Electronics Ltd. ASUS Zenbook Duo Keyboard' ;;
+		usb:touchpad) expected_name='Primax Electronics Ltd. ASUS Zenbook Duo Keyboard Touchpad' ;;
+		bluetooth:keyboard) expected_name='ASUS Zenbook Duo Keyboard' ;;
+		bluetooth:touchpad) expected_name='ASUS Zenbook Duo Keyboard Touchpad' ;;
+		*) return 1 ;;
+	esac
+	case "${DEVICE_TRANSPORT}:${bus}:${vendor}:${product}" in
+		usb:0003:0b05:1cd7|bluetooth:0005:0b05:1cd8) ;;
+		*) return 1 ;;
+	esac
+	[[ "${name}" == "${expected_name}" ]]
+}
+
+activity_pair_names()
+{
+	local item names=()
+	for item in "$@"; do
+		names+=("${item%%|*}")
+	done
+	local IFS=,
+	printf '%s' "${names[*]}"
+}
+
+activity_pair_description()
+{
+	local source="$1" item name readable descriptions=()
+	shift
+	for item in "$@"; do
+		name="${item%%|*}"
+		readable="${item##*|}"
+		descriptions+=("${name}(${source},readable=${readable})")
+	done
+	local IFS=,
+	printf '%s' "${descriptions[*]}"
+}
+
 activity_access_status()
 {
-	local input target properties kind node keyboard=missing touchpad=missing
+	local input target properties kind node source readable keyboard touchpad
+	local -a physical_keyboard=() physical_touchpad=()
+	local -a forwarded_keyboard=() forwarded_touchpad=()
+	local -a selected_keyboard=() selected_touchpad=()
+	ACTIVITY_KEYBOARD=missing
+	ACTIVITY_TOUCHPAD=missing
+	ACTIVITY_KEYBOARD_SOURCE=missing
+	ACTIVITY_TOUCHPAD_SOURCE=missing
 	for input in "${SYSFS_ROOT}"/class/input/event*; do
 		[[ -e "${input}" ]] || continue
 		target="$(readlink -f -- "${input}/device" 2>/dev/null || true)"
-		case "${DEVICE_TRANSPORT}:${target}" in
-			usb:*0003:0B05:1CD7.*|bluetooth:*0005:0B05:1CD8.*) ;;
-			*) continue ;;
-		esac
 		properties="$(udevadm info --query=property --path="${input}" 2>/dev/null || true)"
-		if grep -qx 'ID_INPUT_KEYBOARD=1' <<< "${properties}"; then
+		if grep -qx 'ID_INPUT_KEYBOARD=1' <<< "${properties}" &&
+			! grep -qx 'ID_INPUT_TOUCHPAD=1' <<< "${properties}"
+		then
 			kind=keyboard
-		elif grep -qx 'ID_INPUT_TOUCHPAD=1' <<< "${properties}"; then
+		elif grep -qx 'ID_INPUT_TOUCHPAD=1' <<< "${properties}" &&
+			! grep -qx 'ID_INPUT_KEYBOARD=1' <<< "${properties}"
+		then
 			kind=touchpad
 		else
 			continue
 		fi
+		source=
+		case "${DEVICE_TRANSPORT}:${target}" in
+			usb:*0003:0B05:1CD7.*|bluetooth:*0005:0B05:1CD8.*) source=physical ;;
+			*) forwarded_activity_matches "${input}" "${kind}" && source=forwarded ;;
+		esac
+		[[ -n "${source}" ]] || continue
 		node="${DEV_ROOT}/input/$(basename -- "${input}")"
-		printf -v "${kind}" '%s(readable=%s)' "$(basename -- "${input}")" \
-			"$([[ -r "${node}" ]] && echo yes || echo no)"
+		[[ -r "${node}" ]] && readable=yes || readable=no
+		case "${source}:${kind}" in
+			physical:keyboard) physical_keyboard+=("$(basename -- "${input}")|${readable}") ;;
+			physical:touchpad) physical_touchpad+=("$(basename -- "${input}")|${readable}") ;;
+			forwarded:keyboard) forwarded_keyboard+=("$(basename -- "${input}")|${readable}") ;;
+			forwarded:touchpad) forwarded_touchpad+=("$(basename -- "${input}")|${readable}") ;;
+		esac
 	done
-	ACTIVITY_KEYBOARD="${keyboard%%(*}"
-	ACTIVITY_TOUCHPAD="${touchpad%%(*}"
+	if (( ${#forwarded_keyboard[@]} > 1 )); then
+		keyboard='ambiguous(forwarded)'
+		ACTIVITY_KEYBOARD=unavailable
+		ACTIVITY_KEYBOARD_SOURCE=unavailable
+	elif (( ${#forwarded_keyboard[@]} == 1 )); then
+		selected_keyboard=("${forwarded_keyboard[@]}")
+		ACTIVITY_KEYBOARD_SOURCE=forwarded
+	else
+		selected_keyboard=("${physical_keyboard[@]}")
+		ACTIVITY_KEYBOARD_SOURCE=physical
+	fi
+	if [[ -z "${keyboard:-}" ]]; then
+		if (( ${#selected_keyboard[@]} )); then
+			ACTIVITY_KEYBOARD="$(activity_pair_names "${selected_keyboard[@]}")"
+			keyboard="$(activity_pair_description "${ACTIVITY_KEYBOARD_SOURCE}" "${selected_keyboard[@]}")"
+		else
+			keyboard=missing
+			ACTIVITY_KEYBOARD=missing
+			ACTIVITY_KEYBOARD_SOURCE=missing
+		fi
+	fi
+	if (( ${#forwarded_touchpad[@]} > 1 )); then
+		touchpad='ambiguous(forwarded)'
+		ACTIVITY_TOUCHPAD=unavailable
+		ACTIVITY_TOUCHPAD_SOURCE=unavailable
+	elif (( ${#forwarded_touchpad[@]} == 1 )); then
+		selected_touchpad=("${forwarded_touchpad[@]}")
+		ACTIVITY_TOUCHPAD_SOURCE=forwarded
+	else
+		selected_touchpad=("${physical_touchpad[@]}")
+		ACTIVITY_TOUCHPAD_SOURCE=physical
+	fi
+	if [[ -z "${touchpad:-}" ]]; then
+		if (( ${#selected_touchpad[@]} )); then
+			ACTIVITY_TOUCHPAD="$(activity_pair_names "${selected_touchpad[@]}")"
+			touchpad="$(activity_pair_description "${ACTIVITY_TOUCHPAD_SOURCE}" "${selected_touchpad[@]}")"
+		else
+			touchpad=missing
+			ACTIVITY_TOUCHPAD=missing
+			ACTIVITY_TOUCHPAD_SOURCE=missing
+		fi
+	fi
 	printf 'Activity interfaces: keyboard=%s; touchpad=%s\n' "${keyboard}" "${touchpad}"
 }
 
 watcher_health_status()
 {
-	local service_state="$1" owner mode transport keyboard touchpad consistent=no
+	local service_state="$1" owner mode transport keyboard keyboard_source touchpad touchpad_source consistent=no
+	local ambient_status ambient_lux ambient_band ambient_target ambient_target_label ambient_consistent=no
 	if [[ "${service_state}" != active ]]; then
 		echo "Watcher selection: inactive"
 		return
@@ -793,30 +1079,75 @@ watcher_health_status()
 		owner="$(stat -Lc '%u' -- "${WATCHER_HEALTH_FILE}" 2>/dev/null || true)"
 		mode="$(stat -Lc '%a' -- "${WATCHER_HEALTH_FILE}" 2>/dev/null || true)"
 		if [[ "${owner}:${mode}" == "$(id -u):600" ]] && awk -F= '
-			BEGIN {expected["version"]=1; expected["transport"]=1; expected["keyboard"]=1; expected["touchpad"]=1}
+			BEGIN {
+				expected["version"]=1; expected["transport"]=1
+				expected["keyboard"]=1; expected["keyboard_source"]=1
+				expected["touchpad"]=1; expected["touchpad_source"]=1
+				expected["ambient_status"]=1; expected["ambient_lux"]=1
+				expected["ambient_band"]=1; expected["ambient_target"]=1
+			}
 			NF != 2 || !($1 in expected) || seen[$1]++ {bad=1}
 			END {for (key in expected) if (seen[key] != 1) bad=1; exit bad}
 		' "${WATCHER_HEALTH_FILE}"
 		then
+			[[ "$(awk -F= '$1 == "version" {print $2}' "${WATCHER_HEALTH_FILE}")" == 3 ]] || {
+				printf 'Watcher selection consistent: %s\n' "${consistent}"
+				return
+			}
 			transport="$(awk -F= '$1 == "transport" {print $2}' "${WATCHER_HEALTH_FILE}")"
 			keyboard="$(awk -F= '$1 == "keyboard" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			keyboard_source="$(awk -F= '$1 == "keyboard_source" {print $2}' "${WATCHER_HEALTH_FILE}")"
 			touchpad="$(awk -F= '$1 == "touchpad" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			touchpad_source="$(awk -F= '$1 == "touchpad_source" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			ambient_status="$(awk -F= '$1 == "ambient_status" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			ambient_lux="$(awk -F= '$1 == "ambient_lux" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			ambient_band="$(awk -F= '$1 == "ambient_band" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			ambient_target="$(awk -F= '$1 == "ambient_target" {print $2}' "${WATCHER_HEALTH_FILE}")"
+			if [[ "${ambient_status}" =~ ^(disabled|waiting|warming|available|unavailable)$ &&
+				"${ambient_lux}" =~ ^(none|[0-9]+)$ &&
+				"${ambient_band}" =~ ^(none|dark|dim|normal|bright)$ &&
+				"${ambient_target}" =~ ^(none|[0-3])$ ]]
+			then
+				WATCHER_AMBIENT_STATUS="${ambient_status}"
+				WATCHER_AMBIENT_LUX="${ambient_lux}"
+				WATCHER_AMBIENT_BAND="${ambient_band}"
+				WATCHER_AMBIENT_TARGET="${ambient_target}"
+				if [[ "${AMBIENT_ENABLED}" == 1 && "${ambient_status}" != disabled ]] ||
+					[[ "${AMBIENT_ENABLED}" == 0 && "${ambient_status}" == disabled ]]
+				then
+					ambient_consistent=yes
+				fi
+			fi
 			if [[ "${DEVICE_TRANSPORT}" =~ ^(usb|bluetooth)$ && "${transport}" == "${DEVICE_TRANSPORT}" &&
-				",${keyboard}," == *",${ACTIVITY_KEYBOARD},"* &&
-				",${touchpad}," == *",${ACTIVITY_TOUCHPAD},"* ]]
+				"${keyboard}" == "${ACTIVITY_KEYBOARD}" &&
+				"${keyboard_source}" == "${ACTIVITY_KEYBOARD_SOURCE}" &&
+				"${touchpad}" == "${ACTIVITY_TOUCHPAD}" &&
+				"${touchpad_source}" == "${ACTIVITY_TOUCHPAD_SOURCE}" &&
+				"${ambient_consistent}" == yes ]]
 			then
 				consistent=yes
-			elif [[ -z "${DEVICE_TRANSPORT}" && "${transport}" == disconnected ]]; then
+			elif [[ -z "${DEVICE_TRANSPORT}" && "${transport}" == disconnected &&
+				"${ambient_consistent}" == yes ]]
+			then
 				consistent=yes
 			fi
 		fi
 	fi
 	printf 'Watcher selection consistent: %s\n' "${consistent}"
+	if [[ "${WATCHER_AMBIENT_TARGET}" =~ ^[0-3]$ ]]; then
+		ambient_target_label="$(level_name "${WATCHER_AMBIENT_TARGET}") (${WATCHER_AMBIENT_TARGET})"
+	else
+		ambient_target_label=none
+	fi
+	printf 'Ambient watcher: status=%s; sampled_lux=%s; band=%s; target=%s\n' \
+		"${WATCHER_AMBIENT_STATUS}" "${WATCHER_AMBIENT_LUX}" \
+		"${WATCHER_AMBIENT_BAND}" "${ambient_target_label}"
 }
 
 run_status()
 {
 	local result level permissions owner launcher transport_label service_state
+	local sensor_output sensor_lux control
 	prepare_lock || return 1
 	if discover_device false; then
 		[[ "${DEVICE_TRANSPORT}" == usb ]] && transport_label=USB || transport_label=Bluetooth
@@ -860,9 +1191,32 @@ run_status()
 		printf 'Automatic lighting: %s; timeout=%s minutes; activity=keyboard+touchpad\n' \
 			"$([[ "${AUTO_ENABLED}" == 1 ]] && echo enabled || echo disabled)" \
 			"$((IDLE_TIMEOUT_SECONDS / 60))"
+		printf 'Adaptive ambient lighting: %s; thresholds=%s/%s/%s lux\n' \
+			"$([[ "${AMBIENT_ENABLED}" == 1 ]] && echo enabled || echo disabled)" \
+			"${AMBIENT_DARK_LUX}" "${AMBIENT_DIM_LUX}" "${AMBIENT_BRIGHT_LUX}"
 	else
 		echo "Automatic lighting: invalid configuration"
+		echo "Adaptive ambient lighting: invalid configuration"
 	fi
+	sensor_output="$("${ACTIVITY_HELPER}" --sensor-status 2>/dev/null || true)"
+	if [[ "${sensor_output}" =~ ^status=available[[:space:]]lux=([0-9]+([.][0-9]+)?)$ ]]; then
+		sensor_lux="${BASH_REMATCH[1]}"
+		printf 'Ambient sensor: available; current=%s lux\n' "${sensor_lux}"
+	else
+		echo "Ambient sensor: unavailable"
+	fi
+	if [[ "${STATE_IDLE_SUPPRESSED}" == 1 ]]; then
+		control='idle suppression'
+	elif [[ "${AMBIENT_ENABLED}" == 1 && "${STATE_SOURCE}" == manual ]]; then
+		control='manual override until reconnect/login'
+	elif [[ "${STATE_SOURCE}" == ambient ]]; then
+		control='adaptive ambient target'
+	elif [[ "${AMBIENT_ENABLED}" == 1 ]]; then
+		control='adaptive warm-up or safe Low fallback'
+	else
+		control='fixed/manual preference'
+	fi
+	printf 'Effective control: %s\n' "${control}"
 	service_state="$(systemctl --user is-active "${ACTIVITY_SERVICE}" 2>/dev/null || true)"
 	printf 'Activity service: %s\n' "${service_state:-unavailable}"
 	watcher_health_status "${service_state:-unavailable}"
@@ -921,9 +1275,21 @@ main()
 			[[ "$#" -eq 1 ]] || return 2
 			run_auto_resume
 			;;
-		_configure)
+		_auto-target)
 			[[ "$#" -eq 3 ]] || return 2
-			run_configure "$2" "$3"
+			run_auto_target "$2" "$3"
+			;;
+		_auto-fixed)
+			[[ "$#" -eq 1 ]] || return 2
+			run_auto_fixed
+			;;
+		_migrate)
+			[[ "$#" -eq 1 ]] || return 2
+			run_migrate
+			;;
+		_configure)
+			[[ "$#" -eq 7 ]] || return 2
+			run_configure "$2" "$3" "$4" "$5" "$6" "$7"
 			;;
 		-h|--help|help)
 			usage

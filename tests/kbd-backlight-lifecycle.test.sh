@@ -34,6 +34,7 @@ SHORTCUT_RUNTIME_FILE="${TEST_ROOT}/shortcut-runtime"
 INPUT_MEMBER_FILE="${TEST_ROOT}/input-member"
 UNRELATED_SHORTCUT_FILE="${TEST_ROOT}/unrelated-shortcut"
 FAIL_SHORTCUT_FILE="${TEST_ROOT}/fail-shortcut"
+SERVICE_CALLS="${TEST_ROOT}/service-calls"
 mkdir -p "${TARGET_HOME}/.local/share/applications" "$(dirname "${_KBL_SCRIPT_DEST}")" \
 	"$(dirname "${_KBL_RULE_DEST}")" "$(dirname "${_KBL_LEGACY_TMP}")"
 printf 'Meta+Shift+U\n' > "${UNRELATED_SHORTCUT_FILE}"
@@ -53,17 +54,49 @@ _kbl_reload_udev() { return 0; }
 _kbl_trigger_target_hidraw() { return 0; }
 _kbl_verify_uaccess() { return 0; }
 _kbl_verify_activity_uaccess() { return 0; }
-_kbl_start_activity_service() { return 0; }
 _kbl_revoke_managed_device_access() { return 0; }
 _kbl_reenumerate_target_devices() { return 0; }
 _kbl_as_user()
 {
+	local config="${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf" enabled seconds
+	if [[ "${1:-}" == systemctl ]]; then
+		printf '%s\n' "$*" >> "${SERVICE_CALLS}"
+	fi
+	if [[ "${1:-}" == "${_KBL_ACTIVITY_DEST}" && "${2:-}" == --sensor-status ]]; then
+		echo 'status=available lux=5.0'
+		return 0
+	fi
 	if [[ "${1:-}" == test ]]; then
 		shift
 		command test "$@"
 	fi
-	if [[ "${1:-}" == "${_KBL_SCRIPT_DEST}" && "${2:-}" == status ]]; then
-		echo "Watcher selection consistent: yes"
+	if [[ "${1:-}" == "${_KBL_SCRIPT_DEST}" ]]; then
+		case "${2:-}" in
+			_configure)
+				mkdir -p "$(dirname "${config}")"
+				printf 'version=2\nenabled=%s\nidle_timeout_seconds=%s\nambient_enabled=%s\nambient_dark_lux=%s\nambient_dim_lux=%s\nambient_bright_lux=%s\n' \
+					"$3" "$4" "$5" "$6" "$7" "$8" > "${config}"
+				chmod 600 "${config}"
+				return 0
+				;;
+			_migrate)
+				if grep -qxF version=1 "${config}" 2>/dev/null; then
+					enabled="$(awk -F= '$1 == "enabled" {print $2}' "${config}")"
+					seconds="$(awk -F= '$1 == "idle_timeout_seconds" {print $2}' "${config}")"
+					printf 'version=2\nenabled=%s\nidle_timeout_seconds=%s\nambient_enabled=0\nambient_dark_lux=10\nambient_dim_lux=75\nambient_bright_lux=300\n' \
+						"${enabled}" "${seconds}" > "${config}"
+					chmod 600 "${config}"
+				fi
+				return 0
+				;;
+			_auto-fixed) printf '%s\n' '_auto-fixed' >> "${SERVICE_CALLS}"; return 0 ;;
+			status)
+				echo "Verified hardware level: Low (1)"
+				echo "Preferred session level: Low (1); source=default"
+				echo "Watcher selection consistent: yes"
+				return 0
+				;;
+		esac
 	fi
 	return 0
 }
@@ -184,8 +217,13 @@ assert_same "${_KBL_RULE_SOURCE}" "${_KBL_RULE_DEST}"
 assert_same "${_KBL_LAUNCHER_SOURCE}" "${TARGET_HOME}/.local/share/applications/net.local.kbd-backlight.desktop"
 assert_same "${_KBL_ACTIVITY_SOURCE}" "${_KBL_ACTIVITY_DEST}"
 assert_same "${_KBL_UNIT_SOURCE}" "${_KBL_UNIT_DEST}"
+grep -qxF version=2 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
 grep -qxF enabled=1 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
 grep -qxF idle_timeout_seconds=900 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF ambient_enabled=0 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF ambient_dark_lux=10 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF ambient_dim_lux=75 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF ambient_bright_lux=300 "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf"
 [[ "$(stat -c %a "${TARGET_HOME}/.config/zenbook-tweaks/kbd-backlight.conf")" == 600 ]]
 [[ "$(stat -c %a "${TARGET_HOME}/.local/share/applications/net.local.kbd-backlight.desktop")" == 644 ]]
 grep -qxF 'Meta+Shift+U' "${UNRELATED_SHORTCUT_FILE}"
@@ -212,10 +250,16 @@ _kbl_auto_manifest_valid
 
 # Reinstall keeps the first-install backup and does not repeat legacy/group migration.
 launcher_backup_sha="$(_kbl_sha256 "${_KBL_BACKUP_LAUNCHER}")"
+: > "${SERVICE_CALLS}"
 tweak_pre_install >/dev/null
 tweak_post_install >/dev/null
 [[ "$(_kbl_sha256 "${_KBL_BACKUP_LAUNCHER}")" == "${launcher_backup_sha}" ]]
 grep -qxF 0 "${INPUT_MEMBER_FILE}"
+if ! grep -qF 'systemctl --user restart zenbook-duo-kbd-backlight-activity.service' "${SERVICE_CALLS}"; then
+	echo "FAIL: reinstall did not restart the activity service" >&2
+	cat "${SERVICE_CALLS}" >&2
+	exit 1
+fi
 
 # A failed reinstall leaves the already-managed installation and first baseline intact.
 touch "${FAIL_SHORTCUT_FILE}"

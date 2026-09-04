@@ -28,6 +28,9 @@ printf '1\n' > "${MOCK_ROOT}/level"
 [[ "$(basename "${RULE}")" < 73-seat-late.rules ]]
 grep -q 'TAGS=="asus-kbd-backlight"' "${RULE}"
 grep -q 'OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"' "${RULE}"
+[[ "$(grep -c 'ATTRS{phys}=="input-remapper/\*"' "${RULE}")" == 4 ]]
+grep -q 'ATTRS{id/product}=="1cd7".*ATTRS{name}=="Primax Electronics Ltd. ASUS Zenbook Duo Keyboard".*ID_INPUT_KEYBOARD' "${RULE}"
+grep -q 'ATTRS{id/product}=="1cd8".*ATTRS{name}=="ASUS Zenbook Duo Keyboard".*ID_INPUT_KEYBOARD' "${RULE}"
 if grep -q 'GROUP="input"' "${RULE}"; then
 	echo "FAIL: udev rule still grants the broad input group" >&2
 	exit 1
@@ -42,6 +45,7 @@ export KBD_BACKLIGHT_SYSFS_ROOT="${SYSFS_ROOT}"
 export KBD_BACKLIGHT_DEV_ROOT="${DEV_ROOT}"
 export KBD_BACKLIGHT_IO_HELPER="${IO_HELPER}"
 export KBD_BACKLIGHT_OSD_HELPER="${OSD_HELPER}"
+export KBD_BACKLIGHT_ACTIVITY_HELPER="${ACTIVITY_DAEMON}"
 export KBD_BACKLIGHT_LOCK_WAIT_SECONDS=5
 export MOCK_ROOT
 
@@ -176,6 +180,8 @@ assert_contains "${status}" "Connection: Bluetooth (0B05:1CD8)"
 assert_contains "${status}" "Selected interface: hidraw0; driver=hid-generic"
 assert_contains "${status}" "Verified hardware level: unavailable"
 assert_contains "${status}" "Preferred session level: none"
+assert_contains "${status}" "Adaptive ambient lighting: disabled; thresholds=10/75/300 lux"
+assert_contains "${status}" "Ambient sensor: unavailable"
 output="$(${SCRIPT})"
 assert_contains "${output}" "Keyboard backlight: Low (1) [verified]"
 unset MOCK_MODE
@@ -380,25 +386,106 @@ grep -qxF 'preferred_level=3' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
 ${SCRIPT} _auto-connect "${session_token}" "${connection_two}"
 grep -qxF 'preferred_level=1' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
 
+# Ambient targets are silent, survive idle as the preferred level, yield to a
+# manual override, and regain control only after a new connection or login.
+${SCRIPT} _configure 1 900 1 10 75 300
+before_osd="$(wc -l < "${MOCK_ROOT}/osd")"
+${SCRIPT} _auto-target 3 ambient
+grep -qxF 'preferred_level=3' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+grep -qxF 'preference_source=ambient' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+${SCRIPT} _auto-idle
+${SCRIPT} _auto-target 2 ambient
+grep -qxF 'preferred_level=2' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+grep -qxF 'effective_level=0' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+grep -qxF 'idle_suppressed=1' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+${SCRIPT} _auto-resume
+[[ "$(cat "${MOCK_ROOT}/level")" == 2 ]]
+${SCRIPT} set 0 >/dev/null
+assert_contains "$(${SCRIPT} _auto-target 3 ambient)" 'result=manual-override'
+[[ "$(cat "${MOCK_ROOT}/level")" == 0 ]]
+connection_three="$(printf 'f%.0s' {1..64})"
+${SCRIPT} _auto-connect "${session_token}" "${connection_three}"
+grep -qxF 'preference_source=default' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+${SCRIPT} _auto-target 0 ambient
+grep -qxF 'preference_source=ambient' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+[[ "$(cat "${MOCK_ROOT}/level")" == 0 ]]
+${SCRIPT} _auto-target 1 fallback
+grep -qxF 'preferred_level=1' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+grep -qxF 'preference_source=default' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+[[ "$(cat "${MOCK_ROOT}/level")" == 1 ]]
+${SCRIPT} _auto-target 3 ambient
+${SCRIPT} _configure 1 900 0 10 75 300
+${SCRIPT} _auto-fixed
+grep -qxF 'preferred_level=1' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+grep -qxF 'preference_source=default' "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+[[ "$(cat "${MOCK_ROOT}/level")" == 1 ]]
+[[ "$(wc -l < "${MOCK_ROOT}/osd")" == $((before_osd + 1)) ]]
+
+# Invalid or non-increasing ambient thresholds are rejected.
+if ${SCRIPT} _configure 1 900 1 75 10 300 >/dev/null 2>&1; then
+	echo "FAIL: non-increasing ambient thresholds were accepted" >&2
+	exit 1
+fi
+if ${SCRIPT} _configure 1 900 1 10 75 100001 >/dev/null 2>&1; then
+	echo "FAIL: out-of-range ambient threshold was accepted" >&2
+	exit 1
+fi
+
+# Existing v1 config and v2 state migrate without enabling ambient control or
+# changing the remembered manual preference.
+printf 'version=1\nenabled=1\nidle_timeout_seconds=600\n' > \
+	"${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
+chmod 600 "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
+printf 'version=2\npreferred_level=2\neffective_level=2\ntransport=bluetooth\npreference_source=manual\nidle_suppressed=0\n' > \
+	"${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+chmod 600 "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+${SCRIPT} _migrate
+grep -qxF version=2 "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF ambient_enabled=0 "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF ambient_dark_lux=10 "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
+grep -qxF version=3 "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+grep -qxF preferred_level=2 "${STATE_ROOT}/zenbook-tweaks/kbd-backlight/state"
+
+# Source-aware health accepts only the v3 ambient schema and reports fixed,
+# privacy-safe bands rather than sensor paths or input contents.
+(
+	export KBD_BACKLIGHT_SOURCE_ONLY=true
+	# shellcheck source=/dev/null
+	source "${SCRIPT}"
+	WATCHER_HEALTH_FILE="${TEST_ROOT}/watcher-health"
+	printf 'version=3\ntransport=bluetooth\nkeyboard=event25\nkeyboard_source=forwarded\ntouchpad=event7\ntouchpad_source=physical\nambient_status=available\nambient_lux=4\nambient_band=dark\nambient_target=3\n' > \
+		"${WATCHER_HEALTH_FILE}"
+	chmod 600 "${WATCHER_HEALTH_FILE}"
+	DEVICE_TRANSPORT=bluetooth
+	ACTIVITY_KEYBOARD=event25
+	ACTIVITY_KEYBOARD_SOURCE=forwarded
+	ACTIVITY_TOUCHPAD=event7
+	ACTIVITY_TOUCHPAD_SOURCE=physical
+	AMBIENT_ENABLED=1
+	health_status="$(watcher_health_status active)"
+	assert_contains "${health_status}" "Watcher selection consistent: yes"
+	assert_contains "${health_status}" "Ambient watcher: status=available; sampled_lux=4; band=dark; target=High (3)"
+)
+
 # Disabling automatic management leaves manual Fn+F4 behavior intact.
-${SCRIPT} _configure 0 900
+${SCRIPT} _configure 0 900 0 10 75 300
 ${SCRIPT} set 2 >/dev/null
 ${SCRIPT} _auto-idle
 [[ "$(cat "${MOCK_ROOT}/level")" == 2 ]]
 grep -qxF 'enabled=0' "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
-${SCRIPT} _configure 1 900
+${SCRIPT} _configure 1 900 0 10 75 300
 
 # Hostile configuration and session-marker symlinks are never followed.
 rm -f -- "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
 printf 'config-sentinel\n' > "${TEST_ROOT}/config-sentinel"
 ln -s "${TEST_ROOT}/config-sentinel" "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
-if ${SCRIPT} _configure 1 900 >/dev/null 2>&1; then
+if ${SCRIPT} _configure 1 900 0 10 75 300 >/dev/null 2>&1; then
 	echo "FAIL: configuration symlink was accepted" >&2
 	exit 1
 fi
 grep -qxF config-sentinel "${TEST_ROOT}/config-sentinel"
 rm -f -- "${CONFIG_ROOT}/zenbook-tweaks/kbd-backlight.conf"
-${SCRIPT} _configure 1 900
+${SCRIPT} _configure 1 900 0 10 75 300
 rm -f -- "${RUNTIME_ROOT}/zenbook-tweaks/kbd-backlight-session"
 printf 'session-sentinel\n' > "${TEST_ROOT}/session-sentinel"
 ln -s "${TEST_ROOT}/session-sentinel" "${RUNTIME_ROOT}/zenbook-tweaks/kbd-backlight-session"
@@ -440,6 +527,11 @@ DAEMON_CALLS="${TEST_ROOT}/daemon-calls"
 cat > "${DAEMON_CONTROLLER}" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DAEMON_CALLS}"
+case "$1" in
+	_auto-connect) echo 'result=initialized' ;;
+	_auto-idle) echo 'result=idled' ;;
+	_auto-resume) echo 'result=resumed' ;;
+esac
 MOCK
 cat > "${ACTIVITY_SOURCE}" <<'MOCK'
 #!/usr/bin/env bash
@@ -453,13 +545,244 @@ printf 'connect %064d\n' 2
 MOCK
 chmod 755 "${DAEMON_CONTROLLER}" "${ACTIVITY_SOURCE}"
 export DAEMON_CALLS
+DAEMON_LOG="${TEST_ROOT}/daemon-log"
 KBD_BACKLIGHT_SESSION_TOKEN="$(printf 'd%.0s' {1..64})" \
 KBD_BACKLIGHT_ACTIVITY_SOURCE="${ACTIVITY_SOURCE}" \
-	"${ACTIVITY_DAEMON}" "${DAEMON_CONTROLLER}" 1
+	"${ACTIVITY_DAEMON}" "${DAEMON_CONTROLLER}" 1 0 10 75 300 2> "${DAEMON_LOG}"
 grep -q '^_auto-connect d\{64\} 0\{63\}1$' "${DAEMON_CALLS}"
 grep -qxF '_auto-idle' "${DAEMON_CALLS}"
 grep -qxF '_auto-resume' "${DAEMON_CALLS}"
 grep -q '^_auto-connect d\{64\} 0\{63\}2$' "${DAEMON_CALLS}"
+grep -qxF 'kbd-backlight activity: idle-off timeout=1' "${DAEMON_LOG}"
+grep -qxF 'kbd-backlight activity: activity-restored source=keyboard-test' "${DAEMON_LOG}"
+
+# The ALS reader accepts exactly one canonical sensor, applies offset/scale,
+# rejects unsafe or malformed inputs, and uses deterministic band hysteresis.
+PYTHONDONTWRITEBYTECODE=1 KBD_BACKLIGHT_SESSION_TOKEN="$(printf '9%.0s' {1..64})" python3 - \
+	"${ACTIVITY_DAEMON}" <<'PY'
+import importlib.machinery
+import importlib.util
+import pathlib
+import shutil
+import tempfile
+import sys
+
+loader = importlib.machinery.SourceFileLoader("kbd_ambient", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+
+temporary = pathlib.Path(tempfile.mkdtemp())
+root = temporary / "sys"
+device = root / "devices/platform/als/iio:device0"
+links = root / "bus/iio/devices"
+device.mkdir(parents=True)
+links.mkdir(parents=True)
+(links / "iio:device0").symlink_to(device)
+(device / "name").write_text("als\n")
+(device / "in_illuminance_raw").write_text("100\n")
+(device / "in_illuminance_scale").write_text("0.1\n")
+(device / "in_illuminance_offset").write_text("10\n")
+
+sensor = module.discover_ambient_sensor(root)
+assert sensor is not None
+assert module.read_ambient_lux(sensor) == 11.0
+thresholds = (10, 75, 300)
+assert [module.base_ambient_band(value, thresholds) for value in (9.9, 10, 74, 75, 299, 300)] == [0, 1, 1, 2, 2, 3]
+assert module.ambient_band(11, thresholds, 0) == 0
+assert module.ambient_band(12, thresholds, 0) == 1
+assert module.ambient_band(9, thresholds, 1) == 1
+assert module.ambient_band(7.9, thresholds, 1) == 0
+assert module.ambient_band(350, thresholds, 2) == 2
+assert module.ambient_band(360, thresholds, 2) == 3
+assert module.ambient_band(250, thresholds, 3) == 3
+assert module.ambient_band(239, thresholds, 3) == 2
+
+(device / "in_illuminance_raw").write_text("nan\n")
+assert module.read_ambient_lux(sensor) is None
+(device / "in_illuminance_raw").unlink()
+(device / "raw-target").write_text("5\n")
+(device / "in_illuminance_raw").symlink_to(device / "raw-target")
+assert module.read_ambient_lux(sensor) is None
+(device / "in_illuminance_raw").unlink()
+(device / "in_illuminance_raw").write_text("5\n")
+
+second = root / "devices/platform/als/iio:device1"
+second.mkdir(parents=True)
+(second / "name").write_text("als\n")
+(second / "in_illuminance_raw").write_text("20\n")
+(second / "in_illuminance_scale").write_text("1\n")
+(links / "iio:device1").symlink_to(second)
+assert module.discover_ambient_sensor(root) is None
+(links / "iio:device1").unlink()
+shutil.rmtree(second)
+
+calls = []
+module.controller_call = lambda _controller, *args: calls.append(args) or "result=ambient-updated"
+(device / "in_illuminance_offset").write_text("0\n")
+(device / "in_illuminance_scale").write_text("0.001\n")
+(device / "in_illuminance_raw").write_text("5000\n")
+watcher = module.Watcher("/bin/true", 900, True, 10, 75, 300, root, temporary / "dev")
+watcher.connection_token = "1" * 64
+watcher.write_health("bluetooth", "event25", "forwarded", "event7", "physical")
+for _ in range(3):
+    watcher.poll_ambient()
+assert calls[-1] == ("_auto-target", "3", "ambient")
+assert watcher.ambient_band == 0
+
+(device / "in_illuminance_raw").write_text("400000\n")
+for _ in range(3):
+    watcher.poll_ambient()
+assert calls[-1] == ("_auto-target", "0", "ambient")
+assert watcher.ambient_band == 3
+
+(device / "in_illuminance_raw").write_text("bad\n")
+for _ in range(3):
+    watcher.poll_ambient()
+assert calls[-1] == ("_auto-target", "1", "fallback")
+assert watcher.ambient_status == "unavailable"
+health = watcher.health_file.read_text()
+assert "ambient_status=unavailable\n" in health
+assert "ambient_target=1\n" in health
+
+(device / "in_illuminance_raw").write_text("100000\n")
+for _ in range(3):
+    watcher.poll_ambient()
+assert calls[-1] == ("_auto-target", "1", "ambient")
+assert watcher.ambient_status == "available"
+assert watcher.ambient_band == 2
+watcher.remove_health()
+shutil.rmtree(temporary)
+PY
+
+# Exact input-remapper copies replace only the grabbed activity class. Wrong
+# virtual devices are ignored, and ambiguous forwarded copies fail closed.
+PYTHONDONTWRITEBYTECODE=1 python3 - "${ACTIVITY_DAEMON}" <<'PY'
+import importlib.machinery
+import importlib.util
+import os
+import pathlib
+import shutil
+import tempfile
+import sys
+
+loader = importlib.machinery.SourceFileLoader("kbd_activity", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+
+temporary = pathlib.Path(tempfile.mkdtemp())
+root = temporary / "sys"
+dev_root = temporary / "dev"
+(root / "class/input").mkdir(parents=True)
+(root / "devices/virtual/input").mkdir(parents=True)
+(root / "devices/physical").mkdir(parents=True)
+(dev_root / "input").mkdir(parents=True)
+properties = {}
+
+def add_event(event, device, kind):
+    event_dir = device / event
+    event_dir.mkdir(parents=True)
+    (event_dir / "device").symlink_to("..")
+    (root / "class/input" / event).symlink_to(event_dir)
+    (dev_root / "input" / event).symlink_to("/dev/null")
+    properties[event] = {f"ID_INPUT_{kind.upper()}": "1"}
+
+def add_physical(event, identity, kind, suffix):
+    hid = root / "devices/physical" / f"hid-{suffix}"
+    device = hid / "input" / f"input-{suffix}"
+    device.mkdir(parents=True)
+    (hid / "uevent").write_text(f"HID_ID={identity}\n")
+    add_event(event, device, kind)
+
+def add_forwarded(event, identity, kind, suffix, *, name=None, vendor="0b05", product=None):
+    expected = module.FORWARDED_IDENTITIES[identity]
+    device = root / "devices/virtual/input" / f"input-{suffix}"
+    (device / "id").mkdir(parents=True)
+    (device / "phys").write_text("input-remapper/forwarded\n")
+    (device / "name").write_text((name or expected[kind]) + "\n")
+    (device / "id/bustype").write_text(expected["bus"] + "\n")
+    (device / "id/vendor").write_text(vendor + "\n")
+    (device / "id/product").write_text((product or expected["product"]) + "\n")
+    add_event(event, device, kind)
+
+def remove_event(event):
+    device = (root / "class/input" / event / "device").resolve()
+    (root / "class/input" / event).unlink()
+    (dev_root / "input" / event).unlink()
+    shutil.rmtree(device)
+    properties.pop(event)
+
+def selected(identity):
+    nodes = module.activity_nodes(root, dev_root, identity)
+    result = {(kind, name, source) for _, kind, name, source in nodes}
+    for descriptor, _, _, _ in nodes:
+        os.close(descriptor)
+    return result
+
+module.read_properties = lambda path: properties.get(path.name, {})
+
+add_physical("event4", module.BLUETOOTH_ID, "keyboard", "bt-kbd")
+add_physical("event7", module.BLUETOOTH_ID, "touchpad", "bt-touch")
+add_forwarded("event25", module.BLUETOOTH_ID, "keyboard", "bt-forward")
+add_forwarded(
+    "event30",
+    module.BLUETOOTH_ID,
+    "keyboard",
+    "unrelated",
+    name="Logitech MX Ergo Multi-Device Trackball",
+    vendor="046d",
+    product="b02f",
+)
+assert selected(module.BLUETOOTH_ID) == {
+    ("keyboard", "event25", "forwarded"),
+    ("touchpad", "event7", "physical"),
+}
+remove_event("event25")
+assert selected(module.BLUETOOTH_ID) == {
+    ("keyboard", "event4", "physical"),
+    ("touchpad", "event7", "physical"),
+}
+add_forwarded("event25", module.BLUETOOTH_ID, "keyboard", "bt-forward-recreated")
+
+add_forwarded("event26", module.BLUETOOTH_ID, "touchpad", "bt-touch-forward")
+assert selected(module.BLUETOOTH_ID) == {
+    ("keyboard", "event25", "forwarded"),
+    ("touchpad", "event26", "forwarded"),
+}
+remove_event("event26")
+
+add_forwarded("event27", module.BLUETOOTH_ID, "keyboard", "bt-duplicate")
+assert selected(module.BLUETOOTH_ID) == set()
+remove_event("event27")
+
+add_forwarded(
+    "event27",
+    module.BLUETOOTH_ID,
+    "keyboard",
+    "bt-wrong-name",
+    name="ASUS Zenbook Duo Keyboard Copy",
+)
+assert selected(module.BLUETOOTH_ID) == {
+    ("keyboard", "event25", "forwarded"),
+    ("touchpad", "event7", "physical"),
+}
+
+add_physical("event40", module.USB_ID, "keyboard", "usb-kbd")
+add_physical("event41", module.USB_ID, "touchpad", "usb-touch")
+add_forwarded("event42", module.USB_ID, "keyboard", "usb-forward")
+assert selected(module.USB_ID) == {
+    ("keyboard", "event42", "forwarded"),
+    ("touchpad", "event41", "physical"),
+}
+remove_event("event42")
+assert selected(module.USB_ID) == {
+    ("keyboard", "event40", "physical"),
+    ("touchpad", "event41", "physical"),
+}
+
+shutil.rmtree(temporary)
+PY
 
 # EOF on detached Bluetooth descriptors must unregister them immediately. A
 # pending rescan cannot be postponed, and the next scan adopts the USB nodes.
@@ -492,14 +815,31 @@ def nodes(_sysfs, _dev, _identity):
     for kind, name in zip(("keyboard", "touchpad"), names):
         reader, writer = os.pipe()
         writers.append(writer)
-        result.append((reader, kind, name))
+        source = "forwarded" if kind == "keyboard" else "physical"
+        result.append((reader, kind, name, source))
     return result
 
 module.selected_backlight = selected
 module.activity_nodes = nodes
-module.controller_call = lambda _controller, *args: calls.append(args) or True
-watcher = module.Watcher("/bin/true", 900, "/nonexistent", "/nonexistent")
+def controller(_controller, *args):
+    calls.append(args)
+    return "result=unchanged" if args[0] == "_auto-connect" else "result=resumed"
+
+module.controller_call = controller
+watcher = module.Watcher(
+    "/bin/true", 900, False, 10, 75, 300, "/nonexistent", "/nonexistent"
+)
 watcher.rescan()
+forwarded_descriptor = next(
+    descriptor
+    for descriptor, kind in watcher.input_descriptors.items()
+    if kind == "keyboard"
+)
+watcher.idled = True
+os.write(writers[0], module.EVENT.pack(0, 0, module.EV_KEY, 30, 1))
+watcher.input_ready(forwarded_descriptor)
+assert ("_auto-resume",) in calls
+assert not watcher.idled
 old_descriptors = list(watcher.input_descriptors)
 for writer in writers:
     os.close(writer)
@@ -525,7 +865,10 @@ assert set(watcher.input_names.values()) == {"event28", "event6"}
 health = watcher.health_file.read_text()
 assert "transport=usb\n" in health
 assert "keyboard=event28\n" in health
+assert "keyboard_source=forwarded\n" in health
 assert "touchpad=event6\n" in health
+assert "touchpad_source=physical\n" in health
+assert "ambient_status=disabled\n" in health
 watcher.close_inputs()
 watcher.remove_health()
 for writer in writers:

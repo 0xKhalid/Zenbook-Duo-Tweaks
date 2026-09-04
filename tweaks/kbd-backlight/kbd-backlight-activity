@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""Event-driven activity watcher for the UX8407AA detachable keyboard."""
+
+import errno
+import glob
+import hashlib
+import os
+import pathlib
+import re
+import selectors
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import time
+
+USB_ID = "0003:00000B05:00001CD7"
+BLUETOOTH_ID = "0005:00000B05:00001CD8"
+EVENT = struct.Struct("@llHHI")
+EV_KEY = 0x01
+EV_ABS = 0x03
+
+
+def fail(message):
+    print(f"kbd-backlight activity: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def read_properties(path):
+    result = subprocess.run(
+        ["udevadm", "info", "--query=property", f"--path={path}"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode:
+        return {}
+    properties = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            properties[key] = value
+    return properties
+
+
+def uevent_value(path, key):
+    try:
+        for line in (path / "uevent").read_text().splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1]
+    except OSError:
+        pass
+    return ""
+
+
+def driver_name(path):
+    try:
+        return pathlib.Path(os.path.realpath(path / "driver")).name
+    except OSError:
+        return ""
+
+
+def hid_parent(path):
+    current = path.resolve()
+    for parent in (current, *current.parents):
+        identity = uevent_value(parent, "HID_ID")
+        if identity in {USB_ID, BLUETOOTH_ID}:
+            return parent, identity
+    return None, ""
+
+
+def usb_interface_number(path):
+    for parent in (path.resolve(), *path.resolve().parents):
+        try:
+            return (parent / "bInterfaceNumber").read_text().strip().lower()
+        except OSError:
+            continue
+    return ""
+
+
+def descriptor_valid(path):
+    try:
+        data = (path / "report_descriptor").read_bytes()
+    except OSError:
+        return False
+    for offset in range(max(0, len(data) - 1)):
+        if data[offset : offset + 2] != b"\x85\x5a":
+            continue
+        window = data[offset : offset + 64]
+        if b"\x95\x0f" in window and b"\xb1" in window:
+            return True
+    return False
+
+
+def selected_backlight(sysfs_root):
+    root = pathlib.Path(sysfs_root)
+    matches = []
+    for transport, pattern, identity in (
+        ("usb", "0003:0B05:1CD7.*", USB_ID),
+        ("bluetooth", "0005:0B05:1CD8.*", BLUETOOTH_ID),
+    ):
+        candidates = []
+        for link in (root / "bus/hid/devices").glob(pattern):
+            try:
+                device = link.resolve(strict=True)
+            except OSError:
+                continue
+            if uevent_value(device, "HID_ID") != identity:
+                continue
+            if driver_name(device) != "hid-generic" or not descriptor_valid(device):
+                continue
+            if transport == "usb":
+                if not uevent_value(device, "HID_PHYS").endswith("/input4"):
+                    continue
+                if usb_interface_number(device) != "04":
+                    continue
+            candidates.append(device)
+        if len(candidates) > 1:
+            return None
+        if len(candidates) == 1:
+            token = hashlib.sha256(str(candidates[0]).encode()).hexdigest()
+            matches.append((transport, identity, token))
+            break
+    return matches[0] if matches else None
+
+
+def activity_nodes(sysfs_root, dev_root, identity):
+    root = pathlib.Path(sysfs_root)
+    nodes = []
+    kinds = set()
+    for entry in sorted((root / "class/input").glob("event*")):
+        parent, found_identity = hid_parent(entry / "device")
+        if parent is None or found_identity != identity:
+            continue
+        properties = read_properties(entry)
+        if properties.get("ID_INPUT_KEYBOARD") == "1":
+            kind = "keyboard"
+        elif properties.get("ID_INPUT_TOUCHPAD") == "1":
+            kind = "touchpad"
+        else:
+            continue
+        node = pathlib.Path(dev_root) / "input" / entry.name
+        try:
+            details = node.stat()
+        except OSError:
+            continue
+        if not stat.S_ISCHR(details.st_mode) or not os.access(node, os.R_OK):
+            continue
+        try:
+            descriptor = os.open(node, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError:
+            continue
+        nodes.append((descriptor, kind, node.name))
+        kinds.add(kind)
+    if not {"keyboard", "touchpad"}.issubset(kinds):
+        for descriptor, _, _ in nodes:
+            os.close(descriptor)
+        return []
+    return nodes
+
+
+def session_token():
+    override = os.environ.get("KBD_BACKLIGHT_SESSION_TOKEN", "")
+    if re.fullmatch(r"[0-9a-f]{64}", override):
+        return override
+    uid = str(os.getuid())
+    try:
+        sessions = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        fail("active local session is unavailable")
+    for row in sessions:
+        fields = row.split()
+        if len(fields) < 2 or fields[1] != uid:
+            continue
+        sid = fields[0]
+        values = {}
+        for key in ("Active", "Remote", "Class", "Type", "TimestampMonotonic"):
+            result = subprocess.run(
+                ["loginctl", "show-session", sid, "-p", key, "--value"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            values[key] = result.stdout.strip()
+        if (
+            values.get("Active") != "yes"
+            or values.get("Remote") != "no"
+            or values.get("Class") != "user"
+        ):
+            continue
+        if values.get("Type") not in {"wayland", "x11"}:
+            continue
+        material = f"{sid}:{values.get('TimestampMonotonic', '')}"
+        return hashlib.sha256(material.encode()).hexdigest()
+    fail("active local graphical session is unavailable")
+
+
+def controller_call(controller, *arguments):
+    result = subprocess.run(
+        [controller, *arguments],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "KBD_BACKLIGHT_DISABLE_OSD": "1"},
+    )
+    return result.returncode == 0
+
+
+class Watcher:
+    def __init__(self, controller, timeout, sysfs_root, dev_root):
+        self.controller = controller
+        self.timeout = timeout
+        self.sysfs_root = sysfs_root
+        self.dev_root = dev_root
+        self.session = session_token()
+        self.selector = selectors.DefaultSelector()
+        self.input_descriptors = {}
+        self.input_buffers = {}
+        self.input_names = {}
+        self.connection_token = None
+        self.deadline = None
+        self.idled = False
+        self.rescan_due = 0.0
+        runtime = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+        self.health_file = runtime / "zenbook-tweaks" / "kbd-backlight-watcher"
+
+    def schedule_rescan(self, delay):
+        due = time.monotonic() + delay
+        if not self.rescan_due or due < self.rescan_due:
+            self.rescan_due = due
+
+    def write_health(self, transport, keyboard, touchpad):
+        directory = self.health_file.parent
+        try:
+            if directory.is_symlink():
+                return
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if directory.stat().st_uid != os.getuid():
+                return
+            directory.chmod(0o700)
+            temporary = directory / f".kbd-backlight-watcher.{os.getpid()}"
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o600,
+            )
+            try:
+                content = (
+                    f"version=1\ntransport={transport}\n"
+                    f"keyboard={keyboard}\ntouchpad={touchpad}\n"
+                ).encode()
+                os.write(descriptor, content)
+            finally:
+                os.close(descriptor)
+            os.replace(temporary, self.health_file)
+        except OSError:
+            try:
+                temporary.unlink()
+            except (OSError, UnboundLocalError):
+                pass
+
+    def remove_health(self):
+        try:
+            if not self.health_file.is_symlink():
+                self.health_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def drop_input(self, descriptor):
+        try:
+            self.selector.unregister(descriptor)
+        except Exception:
+            pass
+        self.input_descriptors.pop(descriptor, None)
+        self.input_buffers.pop(descriptor, None)
+        self.input_names.pop(descriptor, None)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+    def close_inputs(self):
+        for descriptor in list(self.input_descriptors):
+            self.drop_input(descriptor)
+
+    def rescan(self):
+        self.close_inputs()
+        selected = selected_backlight(self.sysfs_root)
+        if selected is None:
+            self.connection_token = None
+            self.deadline = None
+            self.idled = False
+            self.write_health("disconnected", "none", "none")
+            return
+        transport, identity, token = selected
+        nodes = activity_nodes(self.sysfs_root, self.dev_root, identity)
+        if not nodes:
+            self.write_health(transport, "unavailable", "unavailable")
+            self.schedule_rescan(1.0)
+            return
+        names = {"keyboard": [], "touchpad": []}
+        for descriptor, kind, name in nodes:
+            self.input_descriptors[descriptor] = kind
+            self.input_buffers[descriptor] = b""
+            self.input_names[descriptor] = name
+            names[kind].append(name)
+            self.selector.register(descriptor, selectors.EVENT_READ, "input")
+        if token != self.connection_token:
+            if not controller_call(self.controller, "_auto-connect", self.session, token):
+                self.schedule_rescan(1.0)
+                return
+            self.connection_token = token
+            self.idled = False
+        self.deadline = time.monotonic() + self.timeout
+        self.rescan_due = 0.0
+        self.write_health(
+            transport,
+            ",".join(sorted(names["keyboard"])),
+            ",".join(sorted(names["touchpad"])),
+        )
+
+    def activity(self):
+        self.deadline = time.monotonic() + self.timeout
+        if self.idled:
+            controller_call(self.controller, "_auto-resume")
+            self.idled = False
+
+    def input_ready(self, descriptor):
+        try:
+            chunk = os.read(descriptor, EVENT.size * 64)
+        except OSError as error:
+            if error.errno not in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                self.drop_input(descriptor)
+                self.schedule_rescan(0.05)
+            return
+        if not chunk:
+            self.drop_input(descriptor)
+            self.schedule_rescan(0.05)
+            return
+        buffer = self.input_buffers.get(descriptor, b"") + chunk
+        kind = self.input_descriptors[descriptor]
+        active = False
+        while len(buffer) >= EVENT.size:
+            _, _, event_type, _, value = EVENT.unpack_from(buffer)
+            buffer = buffer[EVENT.size :]
+            if kind == "keyboard" and event_type == EV_KEY and value in {1, 2}:
+                active = True
+            elif kind == "touchpad" and event_type in {EV_KEY, EV_ABS}:
+                active = True
+        self.input_buffers[descriptor] = buffer
+        if active:
+            self.activity()
+
+    def run_production(self):
+        monitor = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 15)
+        monitor.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
+        monitor.bind((os.getpid(), 1))
+        monitor.setblocking(False)
+        self.selector.register(monitor, selectors.EVENT_READ, "udev")
+        self.rescan()
+        while True:
+            now = time.monotonic()
+            waits = []
+            if self.deadline is not None and not self.idled:
+                waits.append(max(0.0, self.deadline - now))
+            if self.rescan_due:
+                waits.append(max(0.0, self.rescan_due - now))
+            timeout = min(waits) if waits else None
+            for key, _ in self.selector.select(timeout):
+                if key.data == "udev":
+                    try:
+                        message = monitor.recv(65536)
+                    except BlockingIOError:
+                        continue
+                    fields = message.split(b"\0")
+                    if any(field in {b"SUBSYSTEM=input", b"SUBSYSTEM=hidraw", b"SUBSYSTEM=hid"} for field in fields):
+                        self.schedule_rescan(0.25)
+                else:
+                    self.input_ready(key.fd)
+            now = time.monotonic()
+            if self.rescan_due and now >= self.rescan_due:
+                self.rescan()
+            if self.deadline is not None and not self.idled and now >= self.deadline:
+                controller_call(self.controller, "_auto-idle")
+                self.idled = True
+
+    def run_test_source(self, helper):
+        process = subprocess.Popen(
+            [helper], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        self.selector.register(process.stdout, selectors.EVENT_READ, "source")
+        while True:
+            wait = None
+            if self.deadline is not None and not self.idled:
+                wait = max(0.0, self.deadline - time.monotonic())
+            events = self.selector.select(wait)
+            if not events:
+                controller_call(self.controller, "_auto-idle")
+                self.idled = True
+                continue
+            line = process.stdout.readline()
+            if not line:
+                return process.wait()
+            fields = line.strip().split()
+            if len(fields) == 2 and fields[0] == "connect" and re.fullmatch(r"[0-9a-f]{64}", fields[1]):
+                self.connection_token = fields[1]
+                controller_call(self.controller, "_auto-connect", self.session, fields[1])
+                self.deadline = time.monotonic() + self.timeout
+                self.idled = False
+            elif fields == ["disconnect"]:
+                self.connection_token = None
+                self.deadline = None
+                self.idled = False
+            elif fields and fields[0] in {"keyboard", "touchpad"}:
+                self.activity()
+
+
+def main():
+    if len(sys.argv) != 3 or not sys.argv[2].isdigit():
+        fail("usage: kbd-backlight-activity CONTROLLER TIMEOUT_SECONDS")
+    timeout = int(sys.argv[2])
+    if timeout < 1 or timeout > 7200:
+        fail("invalid timeout")
+    watcher = Watcher(
+        sys.argv[1],
+        timeout,
+        os.environ.get("KBD_BACKLIGHT_SYSFS_ROOT", "/sys"),
+        os.environ.get("KBD_BACKLIGHT_DEV_ROOT", "/dev"),
+    )
+    helper = os.environ.get("KBD_BACKLIGHT_ACTIVITY_SOURCE", "")
+    def terminate(_signum, _frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+    try:
+        if helper:
+            return watcher.run_test_source(helper)
+        return watcher.run_production()
+    finally:
+        watcher.close_inputs()
+        watcher.remove_health()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

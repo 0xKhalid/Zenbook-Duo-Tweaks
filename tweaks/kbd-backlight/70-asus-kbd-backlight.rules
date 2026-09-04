@@ -1,0 +1,16 @@
+# ASUS Zenbook Duo UX8407AA detachable-keyboard backlight interface only.
+# This file must sort before 73-seat-late.rules so TAG+="uaccess" is applied.
+
+# USB 0B05:1CD7: mark physical interface 04, then grant only its hidraw child.
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceNumber}=="04", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1cd7", TAG+="asus-kbd-backlight"
+ACTION!="remove", SUBSYSTEM=="hidraw", KERNEL=="hidraw*", TAGS=="asus-kbd-backlight", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+
+# Bluetooth 0B05:1CD8: vendor backlight collection handled by hid-generic.
+ACTION!="remove", SUBSYSTEM=="hidraw", KERNEL=="hidraw*", KERNELS=="0005:0B05:1CD8.*", DRIVERS=="hid-generic", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+
+# Automatic lighting observes only activity timestamps from this keyboard and
+# its detachable touchpad. No other input device receives additional access.
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0003:0B05:1CD7.*", ENV{ID_INPUT_KEYBOARD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0003:0B05:1CD7.*", ENV{ID_INPUT_TOUCHPAD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0005:0B05:1CD8.*", ENV{ID_INPUT_KEYBOARD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0005:0B05:1CD8.*", ENV{ID_INPUT_TOUCHPAD}=="1", OWNER="root", GROUP="root", MODE="0660", TAG+="uaccess"

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Exec=kbd-backlight
+Name=ASUS Keyboard Backlight Toggle
+NoDisplay=true
+StartupNotify=false
+Type=Application
+X-KDE-GlobalAccel-CommandShortcut=true

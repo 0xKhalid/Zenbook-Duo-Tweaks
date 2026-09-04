@@ -9,7 +9,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | **Device** | ASUS Zenbook Duo 2026 (UX8407) |
 | **OS** | Fedora 44 |
 | **Desktop** | KDE Plasma Wayland 6.7.4 |
-| **Kernel** | 7.1.10-200.fc44.x86_64 |
+| **Kernel** | 7.1.12-200.fc44.x86_64 |
 | **GPU** | Intel Panther Lake Graphics `[8086:b090]` |
 | **Driver** | `xe` |
 
@@ -22,7 +22,7 @@ System tweaks for the ASUS Zenbook Duo 2026 (UX8407) on Linux Fedora KDE / Plasm
 | `intel-display-stability` | Prevent Intel screen corruption and freezes |
 | `span-both-screens` | Span maximized windows across both screens |
 | `brightness-lock` | Keep the lower screen at full brightness |
-| `kbd-backlight` | Control the detachable keyboard backlight |
+| `kbd-backlight` | Secure Fn+F4 control for the detachable keyboard backlight |
 | `speaker-fix` | Fix silent built-in speakers |
 | `whisper-dictate` | Private, on-device voice typing |
 | `heic-support` | Open HEIC and HEIF images in KDE |
@@ -91,7 +91,10 @@ Zenbook-Duo-Tweaks/
 │   ├── kbd-backlight/
 │   │   ├── tweak.conf
 │   │   ├── kbd-backlight.sh
-│   │   └── 99-asus-kbd-backlight.rules
+│   │   ├── kbd-backlight-activity
+│   │   ├── 70-asus-kbd-backlight.rules
+│   │   ├── net.local.kbd-backlight.desktop
+│   │   └── zenbook-duo-kbd-backlight-activity.service
 │   ├── speaker-fix/
 │   │   ├── tweak.conf
 │   │   ├── zenbook-duo-speaker-fix.sh
@@ -105,6 +108,9 @@ Zenbook-Duo-Tweaks/
 │       ├── tweak.conf
 │       └── local-overrides.quirks
 ├── .gitignore
+├── tests/
+│   ├── kbd-backlight.test.sh
+│   └── kbd-backlight-lifecycle.test.sh
 └── README.md
 ```
 
@@ -113,6 +119,12 @@ Zenbook-Duo-Tweaks/
 This software is provided "as is", without warranty of any kind, express or implied. The authors are not responsible for any damage, data loss, or system issues that may result from using these tweaks. These tweaks modify system-level files and services — use at your own risk. Always review what a tweak does before installing.
 
 ## Changelog
+
+### v2.13 - Authoritative detachable-keyboard backlight control:
+- Consolidated reliable USB and Bluetooth keyboard-backlight control, preserving Fn+F4 and adding Plasma level feedback.
+- Added optional automatic lighting: start Low, turn off after configurable inactivity, restore on keyboard or touchpad activity, and respect manual Off.
+- Added private state, rapid-press locking, strict device validation, and active-session access without permanent `input`-group membership.
+- Added safe launcher/shortcut migration, diagnostics, tested reinstall and exact Uninstall rollback, and refreshed Fedora 44 system metadata.
 
 ### v2.12 - Reliable first-attempt hibernation:
 - Added the reversible `hibernation-fix` tweak for the verified UX8407AA Intel Bluetooth PCIe controller and physical ASUS USB keyboard.

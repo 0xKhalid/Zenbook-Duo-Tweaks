@@ -26,5 +26,7 @@ AGENTS.md
 *.bak
 *.log
 
-# Local tests
-tests/
+# Local tests (publish only the keyboard-backlight regression suite)
+tests/*
+!tests/kbd-backlight.test.sh
+!tests/kbd-backlight-lifecycle.test.sh
